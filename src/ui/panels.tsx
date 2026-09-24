@@ -21,8 +21,6 @@ import { Ring } from './Ring';
 
 /** 注文の輪を並べる数の上限（あふれた分は +n） */
 const MAX_ORDER_CHIPS = 5;
-/** 新品で補うボタンを出すのは、足りないのがこの種類数までのとき（全部を新品で買うと損になるため） */
-const MAX_NEW_MISSING = 2;
 
 export function LanePanel() {
   const screen = useGame((st) => st.view!.screen);
@@ -149,6 +147,7 @@ function AssemblyPanel() {
         sets: view.sets,
         missing: view.missing,
         cost: view.missingCost,
+        offerBuy: view.offerBuyMissing,
         canBuy: view.canBuyMissing,
         sub: view.sub,
         priority: view.subPriority,
@@ -204,7 +203,7 @@ function AssemblyPanel() {
           <Wrench size={18} strokeWidth={2.3} className="lane-ink-asm" />
           組める
         </div>
-        {v.sets > 0 || v.missing.length > MAX_NEW_MISSING ? (
+        {!v.offerBuy ? (
           <div className="big-count" data-testid="sets">
             {v.sets}
             <small>台</small>

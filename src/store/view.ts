@@ -91,6 +91,8 @@ export interface ViewModel {
   sets: number;
   missing: PartType[];
   missingCost: number;
+  /** 組める台数の代わりに、足りない部品と新品で補うボタンを出す */
+  offerBuyMissing: boolean;
   canBuyMissing: boolean;
   brokenParts: number;
   pcs: number;
@@ -218,6 +220,7 @@ export function buildView(s: GameState, bal: Balance): ViewModel {
     sets: setsOf(s.parts),
     missing,
     missingCost: cost,
+    offerBuyMissing: setsOf(s.parts) === 0 && missing.length <= bal.display.buyMissingMaxTypes,
     canBuyMissing: s.status === 'playing' && missing.length > 0 && s.cash >= cost,
     brokenParts: s.stats.brokenParts,
     pcs: s.pcs,

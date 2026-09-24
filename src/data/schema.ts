@@ -122,6 +122,8 @@ export const TuningSchema = z.object({
     hintUntilSales: count,
     /** 導き：手が空いてからこの秒数で光らせる */
     hintIdleSeconds: z.number().nonnegative(),
+    /** 新品で補うボタンを出すのは、足りない部品がこの種類数までのとき（全部を新品で買うと損になるため） */
+    buyMissingMaxTypes: count,
   }),
   bot: z.object({
     stockHighPcs: count,

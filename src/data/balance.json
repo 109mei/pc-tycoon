@@ -89,7 +89,8 @@
     "maxTicksPerFrame": 600,
     "payWarnSeconds": 20,
     "hintUntilSales": 3,
-    "hintIdleSeconds": 1.5
+    "hintIdleSeconds": 1.5,
+    "buyMissingMaxTypes": 2
   },
   "bot": {
     "stockHighPcs": 3,
