@@ -18,6 +18,21 @@ async function shot(page: Page, name: string, wait = 420): Promise<void> {
 /** 「+¥」や飛ぶ部品が落ち着くまで */
 const SETTLE = 1500;
 
+interface ShipLike {
+  pcs: number;
+  orders: unknown[];
+  player: { task: unknown };
+}
+
+/** 注文が count 件並び、自分の手が空くまで時間を進める（最大 maxSeconds 秒） */
+async function waitOrders(page: Page, count: number, maxSeconds = 30): Promise<void> {
+  for (let t = 0; t < maxSeconds; t += 0.5) {
+    const s = await debug<ShipLike>(page, 'state()');
+    if (s.orders.length >= count && s.pcs >= 1 && s.player.task === null) return;
+    await debug(page, 'step(0.5)');
+  }
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test('生産・制作・販売（開始45秒ごろ）', async ({ page }) => {
@@ -36,14 +51,11 @@ test('生産・制作・販売（開始45秒ごろ）', async ({ page }) => {
   await debug(page, 'step(1.6)');
   await shot(page, '02_assembly', SETTLE);
 
-  // 販売：注文・下請けの依頼。売れた瞬間の「+¥」
+  // 販売：注文が並んだところで1件発送し、売れた瞬間の「+¥」を撮る
   await page.getByTestId('switch-ship').click();
-  await debug(page, 'step(0.4)');
-  const s = await debug<{ pcs: number; orders: unknown[] }>(page, 'state()');
-  if (s.pcs > 0 && s.orders.length > 0) {
-    await page.getByTestId('work').click();
-    await debug(page, 'step(1.5)');
-  }
+  await waitOrders(page, 2);
+  await page.getByTestId('work').click();
+  await debug(page, 'step(1.6)');
   await shot(page, '03_sales');
 });
 
@@ -72,6 +84,7 @@ test('夜の販売と生産', async ({ page }) => {
   await debug(page, "setTheme('night')");
   await debug(page, 'runBot(150, { hire: true })');
   await debug(page, "setScreen('ship')");
+  await waitOrders(page, 2);
   await shot(page, '06_sales_night', SETTLE);
   await debug(page, "setScreen('dis')");
   await shot(page, '07_production_night', SETTLE);
