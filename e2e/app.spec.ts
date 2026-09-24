@@ -185,6 +185,7 @@ test('閉じていた間を進め、戻ってきたときにまとめを出す',
   await expect(away).toBeVisible();
   await expect(away).toContainText('1時間');
   await expect(away).toContainText('売上');
+  await expect(away).toContainText('支払い');
   const after = await debug<StateLike>(second, 'state()');
   expect(after.tick - before.tick).toBeGreaterThanOrEqual(36000);
   expect(after.stats.hires).toBe(1);

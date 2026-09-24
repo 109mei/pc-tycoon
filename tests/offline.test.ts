@@ -3,6 +3,7 @@ import {
   cloneState,
   createState,
   hire,
+  nextBill,
   reassignWorker,
   returnFromAway,
   runPolicy,
@@ -19,13 +20,13 @@ import { balance as bal } from '../src/data';
 function midGame(seed: number): GameState {
   const s = createState(bal, seed);
   runPolicy(s, bal, 200, smartPolicy());
-  // 比べる間に支払いで困らない額（困ると、実際の進行は猶予、不在の進行は休みと、決まりが分かれる）
   s.cash += 1_000_000;
   while (s.workers.length < bal.workers.maxCount) hire(s, bal, 'asm');
-  // 制作と販売に1人ずつ。部品を渡しておき、組み立て→発送→入金が不在中も回るようにする
+  // 制作と販売に1人ずつ。部品を多めに渡しておき、組み立て→発送→入金が不在中も回るようにする
+  // （不在中の稼ぎで支払いが払えないと、不在の進行ではアルバイトが休み、実際の進行とは決まりが分かれる）
   reassignWorker(s, s.workers[0]!.id, 'asm');
   reassignWorker(s, s.workers[1]!.id, 'ship');
-  for (const t of PART_TYPES) s.parts[t] += 10;
+  for (const t of PART_TYPES) s.parts[t] += 300;
   // 自分の手は動かさない（長押しなし・作業なし）。制作の画面にいないので「手」としても数えない
   s.player.holding = false;
   s.player.task = null;
@@ -41,14 +42,16 @@ describe('閉じていた間の進行', () => {
       const seconds = 900;
       for (let i = 0; i < Math.round(seconds / bal.tickSeconds); i++) step(online, bal);
       const away = cloneState(base);
-      simulateAway(away, bal, seconds);
+      const sum = simulateAway(away, bal, seconds);
       expect(away).toEqual(online);
+      expect(sum.workersRested).toBe(false);
+      expect(sum.paid).toBeGreaterThan(0);
       expect(away.stats.sold).toBeGreaterThan(base.stats.sold);
-      expect(away.stats.ordersLost).toBeGreaterThan(base.stats.ordersLost);
+      expect(away.stats.ordersArrived).toBeGreaterThan(base.stats.ordersArrived);
     }
   });
 
-  it('何回かに分けて閉じても、まとめて閉じたのと同じになる', () => {
+  it('稼ぎで支払いが払えている間は、何回かに分けて閉じても、まとめて閉じたのと同じになる', () => {
     const a = midGame(5);
     const b = cloneState(a);
     simulateAway(a, bal, 600);
@@ -66,7 +69,11 @@ describe('閉じていた間の進行', () => {
   });
 
   it('不在中は倒産させない。払えないときはアルバイトを休ませ、戻ったら休みを解く', () => {
+    // 稼ぎのない形：部品も完成品もなく、所持金は支払い1回分に足りない
     const s = midGame(6);
+    for (const t of PART_TYPES) s.parts[t] = 0;
+    s.pcs = 0;
+    s.junk = 0;
     s.cash = 20000;
     s.autoBuy = false;
     const sum = simulateAway(s, bal, 3600);
@@ -76,6 +83,32 @@ describe('閉じていた間の進行', () => {
     expect(s.workers.every((w) => w.resting)).toBe(true);
     returnFromAway(s, bal);
     expect(s.workers.every((w) => !w.resting)).toBe(true);
+  });
+
+  it('長く閉じていても、支払いで減る所持金は閉じたときから支払い1回分まで（戻ったら続けられる）', () => {
+    // 始めたばかりで閉じる
+    const s = createState(bal, 11);
+    s.autoBuy = false;
+    const before = s.cash;
+    const bill = nextBill(s, bal);
+    const sum = simulateAway(s, bal, bal.save.offlineMaxSeconds);
+    expect(s.cash).toBe(Math.max(0, before - bill));
+    expect(sum.paid).toBe(before - s.cash);
+
+    // 稼ぎのない形で2人雇ったまま閉じる：1回目は給料まで払い、2回目からはアルバイトが休む
+    const m = midGame(12);
+    reassignWorker(m, m.workers[0]!.id, 'dis');
+    reassignWorker(m, m.workers[1]!.id, 'asm');
+    for (const t of PART_TYPES) m.parts[t] = 0;
+    m.junk = 0;
+    m.pcs = 0;
+    m.autoBuy = false;
+    const mBefore = m.cash;
+    const mBill = nextBill(m, bal);
+    const mSum = simulateAway(m, bal, bal.save.offlineMaxSeconds);
+    expect(m.cash).toBe(mBefore - mBill);
+    expect(mSum.workersRested).toBe(true);
+    expect(m.status).toBe('playing');
   });
 
   it('不在中は自分の手が動かない', () => {

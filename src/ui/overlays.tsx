@@ -1,7 +1,20 @@
 import { useShallow } from 'zustand/react/shallow';
 import { game, refreshView, showAway, useGame } from '../store/game';
 import { duration, num, signedYen, yen } from './format';
-import { Clock, Coffee, LANE_NAME, LaneIcon, Package, RotateCcw, TrendingUp, TriangleAlert, Trophy, User, X } from './icons';
+import {
+  Clock,
+  Coffee,
+  LANE_NAME,
+  LaneIcon,
+  Package,
+  ReceiptJapaneseYen,
+  RotateCcw,
+  TrendingUp,
+  TriangleAlert,
+  Trophy,
+  User,
+  X,
+} from './icons';
 
 function restart() {
   game().restart();
@@ -88,6 +101,13 @@ export function Overlays() {
             売った台数
             <b>{num(a.sold)}台</b>
           </div>
+          {a.paid > 0 && (
+            <div className="stat-row">
+              <ReceiptJapaneseYen size={18} strokeWidth={2.4} />
+              支払い
+              <b>{signedYen(-a.paid)}</b>
+            </div>
+          )}
           <div className="stat-row">
             <X size={18} strokeWidth={2.4} />
             逃した注文

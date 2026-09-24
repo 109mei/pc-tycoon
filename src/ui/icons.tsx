@@ -32,6 +32,7 @@ export {
   PcCase,
   PlugZap,
   Plus,
+  ReceiptJapaneseYen,
   Recycle,
   RotateCcw,
   Settings,

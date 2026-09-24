@@ -7,6 +7,8 @@ import type { GameEvent, GameState, Lane } from './types';
 export interface StepOptions {
   /** 不在中の進行：自分の手は動かず、倒産もしない（払えなければアルバイトが休む） */
   away?: boolean;
+  /** 不在中の支払いで、所持金をこれより下げない（既定は0円） */
+  awayFloor?: number;
   /** 世界の出来事のあと、手が動く前に呼ぶ（ボット用） */
   beforeWork?: (s: GameState, ev: GameEvent[]) => void;
 }
@@ -69,7 +71,7 @@ export function step(s: GameState, bal: Balance, opts: StepOptions = {}): GameEv
   // 支払い
   if (t >= s.nextPayAt) {
     s.nextPayAt += bal.payments.intervalSeconds;
-    pay(s, bal, away, ev);
+    pay(s, bal, away ? (opts.awayFloor ?? 0) : null, ev);
   }
 
   // 猶予：0以上に戻れば解除、戻らなければ倒産（不在中は倒産させない）
@@ -118,20 +120,22 @@ export function step(s: GameState, bal: Balance, opts: StepOptions = {}): GameEv
   return ev;
 }
 
-function pay(s: GameState, bal: Balance, away: boolean, ev: GameEvent[]): void {
+/** 支払い。awayFloor は不在中だけ渡す（null はいるとき） */
+function pay(s: GameState, bal: Balance, awayFloor: number | null, ev: GameEvent[]): void {
   let bill = nextBill(s, bal);
-  if (away && s.cash < bill) {
-    // 不在中は倒産させない：アルバイトを休ませ（作業も給料も止める）、払える分だけ払う
+  const room = awayFloor === null ? Infinity : Math.max(0, s.cash - awayFloor);
+  if (room < bill) {
+    // 不在中は倒産させない：アルバイトを休ませ（作業も給料も止める）、下げてよい額の分だけ払う
     if (activeWorkerCount(s) > 0) {
       for (const w of s.workers) w.resting = true;
       ev.push({ type: 'workersRested' });
     }
-    bill = Math.min(bal.payments.utility + bal.payments.rent, Math.max(0, s.cash));
+    bill = Math.min(bal.payments.utility + bal.payments.rent, room);
   }
   spend(s, bill);
   ev.push({ type: 'paid', amount: bill });
   closePeriod(s, bal);
-  if (!away && s.cash < 0 && s.graceUntil === null) {
+  if (awayFloor === null && s.cash < 0 && s.graceUntil === null) {
     s.graceUntil = s.t + bal.payments.graceSeconds;
     ev.push({ type: 'graceStarted' });
   }

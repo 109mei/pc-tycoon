@@ -9,6 +9,8 @@ export interface AwaySummary {
   /** 閉じていた秒数（上限で切る前） */
   requestedSeconds: number;
   revenue: number;
+  /** 不在中に払った額（電気代・家賃・給料） */
+  paid: number;
   sold: number;
   lost: number;
   cashBefore: number;
@@ -22,7 +24,8 @@ export interface AwaySummary {
 /**
  * 閉じていた間の進行。ルール本体を同じ刻みでまとめて回す。
  * 自分の手は動かない。アルバイト・自動仕入れ・注文・支払い・下請けの納期は進む。
- * 倒産はさせず、支払えないときはアルバイトを休ませる。
+ * 倒産はさせない。支払いで減る所持金は、閉じたときから支払い1回分まで（長く閉じても、戻ったら続けられるように）。
+ * それより下げないと払えないときは、アルバイトを休ませ、下げてよい額の分だけ払う。
  */
 export function simulateAway(s: GameState, bal: Balance, seconds: number): AwaySummary {
   const requested = Math.max(0, seconds);
@@ -32,6 +35,7 @@ export function simulateAway(s: GameState, bal: Balance, seconds: number): AwayS
     seconds: 0,
     requestedSeconds: requested,
     revenue: 0,
+    paid: 0,
     sold: 0,
     lost: 0,
     cashBefore: s.cash,
@@ -42,14 +46,17 @@ export function simulateAway(s: GameState, bal: Balance, seconds: number): AwayS
   const stuck: Record<Lane, number> = { dis: 0, asm: 0, ship: 0 };
   s.player.holding = false;
   s.player.queued = false;
+  const awayFloor = Math.max(0, s.cash - nextBill(s, bal));
   for (let i = 0; i < steps && s.status === 'playing'; i++) {
-    const ev = step(s, bal, { away: true });
+    const ev = step(s, bal, { away: true, awayFloor });
     for (const e of ev) {
       if (e.type === 'sold') {
         summary.sold += 1;
         summary.revenue += e.amount;
       } else if (e.type === 'subFee') {
         summary.revenue += e.amount;
+      } else if (e.type === 'paid') {
+        summary.paid += e.amount;
       } else if (e.type === 'orderLost') {
         summary.lost += 1;
       } else if (e.type === 'workersRested') {
