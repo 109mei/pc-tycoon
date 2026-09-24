@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "tickSeconds": 0.1,
+  "startCash": 10000,
+  "junk": {
+    "price": 3000,
+    "partsYield": [
+      { "parts": 1, "probability": 0.20 },
+      { "parts": 2, "probability": 0.35 },
+      { "parts": 3, "probability": 0.30 },
+      { "parts": 4, "probability": 0.15 }
+    ],
+    "autoBuy": {
+      "enabledByDefault": true,
+      "keepJunk": 2,
+      "pauseWhenPartsAtLeast": 12,
+      "pauseWhenPcsAtLeast": 3
+    }
+  },
+  "pc": {
+    "partsPerPc": 4,
+    "salePrice": 19800,
+    "marketFeeRate": 0.10,
+    "shippingCost": 1500
+  },
+  "taskSeconds": {
+    "disassemble": 2.5,
+    "assemble": 4.0,
+    "ship": 1.5
+  },
+  "orders": {
+    "baseIntervalSeconds": 7.0,
+    "growthPerSale": 0.02,
+    "maxMultiplier": 2.0,
+    "patienceSeconds": 15.0
+  },
+  "payments": {
+    "intervalSeconds": 60,
+    "utility": 1500,
+    "graceSeconds": 30
+  },
+  "workers": {
+    "hireCost": 60000,
+    "wage": 12000,
+    "speed": 0.9,
+    "maxCount": 2
+  },
+  "subcontract": {
+    "firstOfferAtSeconds": 45,
+    "offerEverySeconds": 75,
+    "offerExpiresSeconds": 20,
+    "units": 6,
+    "deadlineSeconds": 90,
+    "feePerUnit": 4000,
+    "penaltyPerUnit": 4000
+  },
+  "stage1": {
+    "clearCash": 400000
+  },
+  "save": {
+    "autosaveSeconds": 5,
+    "offlineMaxSeconds": 7200
+  },
+
+  "bottleneck": {
+    "starvedSecondsPerPoint": 3,
+    "minScore": 1.0,
+    "holdSeconds": 3
+  },
+  "display": {
+    "uiHz": 10,
+    "incomeWindowSeconds": 30,
+    "orderUrgentSeconds": 5,
+    "hireForecastSeconds": 60,
+    "hireMeasurePreSeconds": 30,
+    "hireMeasurePostSeconds": 60,
+    "hireBadgeMeasuredSeconds": 20,
+    "awaySummaryMinSeconds": 10,
+    "financePeriods": 5,
+    "shippedBoxSeconds": 8,
+    "maxTicksPerFrame": 600
+  },
+  "bot": {
+    "stockHighPcs": 3,
+    "disassembleBelowPcSets": 2,
+    "disassembleUpToPcSets": 3,
+    "subUrgencyFactor": 1.6,
+    "reserveWages": 1,
+    "secondHireDemandRatio": 0.95,
+    "secondHireWindowSeconds": 30,
+    "hireLanes": ["asm", "dis"]
+  }
+}
