@@ -73,7 +73,7 @@ export class GameRuntime {
     return summary.requestedSeconds >= this.bal.display.awaySummaryMinSeconds ? summary : null;
   }
 
-  /** 毎フレーム呼ぶ。経った時間ぶん、決まった刻みでルール本体を進める */
+  /** タイマーと毎フレームから呼ぶ。経った時間ぶん、決まった刻みでルール本体を進める */
   frame(nowMs: number): void {
     if (this.hidden) return;
     if (this.lastFrameMs === null) {
@@ -81,7 +81,9 @@ export class GameRuntime {
       this.lastSaveMs = nowMs;
       return;
     }
-    const dt = Math.max(0, (nowMs - this.lastFrameMs) / 1000);
+    // 時刻が戻ったときは数えない（同じ時間を二重に進めないため）
+    if (nowMs <= this.lastFrameMs) return;
+    const dt = (nowMs - this.lastFrameMs) / 1000;
     this.lastFrameMs = nowMs;
     const tick = this.bal.tickSeconds;
     const maxTicks = this.bal.display.maxTicksPerFrame;

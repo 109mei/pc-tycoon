@@ -96,16 +96,13 @@ async function start(): Promise<void> {
   const root = document.getElementById('root')!;
   createRoot(root).render(<App onRoomHost={onRoomHost} />);
 
-  // 更新の頻度を分ける：core は決まった刻み、PixiJS は毎フレーム、React は1秒に uiHz 回
-  const uiInterval = 1000 / balance.display.uiHz;
-  let lastUi = 0;
+  // 更新の頻度を分ける：core は決まった刻み（タイマー）、React は1秒に uiHz 回、PixiJS は毎フレーム。
+  // core をフレームに頼らず進めるので、フレームが間引かれても時間は遅れない
+  window.setInterval(() => runtime.frame(performance.now()), balance.tickSeconds * 1000);
+  window.setInterval(refreshView, 1000 / balance.display.uiHz);
   const loop = (now: number) => {
-    runtime.frame(now);
+    runtime.frame(performance.now());
     world?.render(runtime.state, balance, useGame.getState().theme, now);
-    if (now - lastUi >= uiInterval) {
-      lastUi = now;
-      refreshView();
-    }
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
