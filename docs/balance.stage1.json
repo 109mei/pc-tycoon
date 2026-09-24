@@ -1,27 +1,34 @@
 {
-  "version": 1,
+  "version": 2,
   "tickSeconds": 0.1,
-  "startCash": 10000,
+  "startCash": 15000,
   "junk": {
     "price": 3000,
-    "partsYield": [
-      { "parts": 1, "probability": 0.20 },
-      { "parts": 2, "probability": 0.35 },
-      { "parts": 3, "probability": 0.30 },
-      { "parts": 4, "probability": 0.15 }
-    ],
+    "goodRate": { "board": 0.75, "memory": 0.80, "storage": 0.58, "power": 0.65 },
     "autoBuy": {
       "enabledByDefault": true,
       "keepJunk": 2,
-      "pauseWhenPartsAtLeast": 12,
-      "pauseWhenPcsAtLeast": 3
+      "pauseWhenSetsAtLeast": 3,
+      "pauseWhenPcsAtLeast": 3,
+      "reserveWithinSeconds": 25
     }
   },
+  "newParts": {
+    "price": { "board": 6000, "memory": 2500, "storage": 3000, "power": 3500 }
+  },
   "pc": {
-    "partsPerPc": 4,
-    "salePrice": 19800,
     "marketFeeRate": 0.10,
     "shippingCost": 1500
+  },
+  "market": {
+    "priceLevels": [
+      { "price": 15800, "demand": 1.97, "minReviews": 0 },
+      { "price": 17800, "demand": 1.38, "minReviews": 0 },
+      { "price": 19800, "demand": 1.00, "minReviews": 0 },
+      { "price": 21800, "demand": 0.75, "minReviews": 10 },
+      { "price": 23800, "demand": 0.58, "minReviews": 25 }
+    ],
+    "defaultLevel": 2
   },
   "taskSeconds": {
     "disassemble": 2.5,
@@ -29,20 +36,21 @@
     "ship": 1.5
   },
   "orders": {
-    "baseIntervalSeconds": 7.0,
-    "growthPerSale": 0.02,
+    "baseIntervalSeconds": 6.5,
+    "growthPerSale": 0.01,
     "maxMultiplier": 2.0,
     "patienceSeconds": 15.0
   },
   "payments": {
     "intervalSeconds": 60,
     "utility": 1500,
+    "rent": 8000,
     "graceSeconds": 30
   },
   "workers": {
-    "hireCost": 60000,
-    "wage": 12000,
-    "speed": 0.9,
+    "hireCost": 50000,
+    "wage": 15000,
+    "speed": 1.1,
     "maxCount": 2
   },
   "subcontract": {

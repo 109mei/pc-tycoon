@@ -102,7 +102,7 @@ async function start(): Promise<void> {
   window.setInterval(refreshView, 1000 / balance.display.uiHz);
   const loop = (now: number) => {
     runtime.frame(performance.now());
-    world?.render(runtime.state, balance, useGame.getState().theme, now);
+    world?.render(runtime.state, useGame.getState().theme, now, runtime.drainWorldEvents());
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
@@ -137,6 +137,10 @@ async function start(): Promise<void> {
         },
         step: (seconds: number) => {
           runtime.debugStep(seconds);
+          refreshView();
+        },
+        setParts: (parts: Record<string, number>) => {
+          runtime.debugSetParts(parts);
           refreshView();
         },
         setScreen: (lane: Lane) => setScreen(lane),

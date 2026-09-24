@@ -3,8 +3,14 @@ import { z } from 'zod';
 const yen = z.number().int().nonnegative();
 const seconds = z.number().positive();
 const count = z.number().int().nonnegative();
+const rate = z.number().min(0).max(1);
 
 export const LaneSchema = z.enum(['dis', 'asm', 'ship']);
+export const PartTypeSchema = z.enum(['board', 'memory', 'storage', 'power']);
+
+/** 部品の種類ごとの値（マザーボード・メモリ・ストレージ・電源） */
+const perPart = <T extends z.ZodType>(v: T) =>
+  z.object({ board: v, memory: v, storage: v, power: v });
 
 /** docs/balance.stage1.json（元の数値）の形。src/data/balance.json もこの部分は同じ値を持つ。 */
 export const BalanceSchema = z.object({
@@ -13,30 +19,43 @@ export const BalanceSchema = z.object({
   startCash: yen,
   junk: z.object({
     price: yen.positive(),
-    partsYield: z
-      .array(
-        z.object({
-          parts: z.number().int().positive(),
-          probability: z.number().min(0).max(1),
-        }),
-      )
-      .min(1)
-      .refine((rows) => Math.abs(rows.reduce((a, r) => a + r.probability, 0) - 1) < 1e-9, {
-        message: '部品の数の確率の合計が1ではない',
-      }),
+    /** 分解したとき、その部品が使える（壊れていない）確率 */
+    goodRate: perPart(rate),
     autoBuy: z.object({
       enabledByDefault: z.boolean(),
       keepJunk: count,
-      pauseWhenPartsAtLeast: count,
+      pauseWhenSetsAtLeast: count,
       pauseWhenPcsAtLeast: count,
+      /** 次の支払いまでこの秒数を切ったら、支払い額を残して買う */
+      reserveWithinSeconds: z.number().nonnegative(),
     }),
   }),
+  /** 足りない部品を新品で補うときの値段 */
+  newParts: z.object({
+    price: perPart(yen.positive()),
+  }),
   pc: z.object({
-    partsPerPc: z.number().int().positive(),
-    salePrice: yen.positive(),
     marketFeeRate: z.number().min(0).max(1),
     shippingCost: yen,
   }),
+  /** 出品価格の段階。評価（売った件数）が minReviews 以上で選べる */
+  market: z
+    .object({
+      priceLevels: z
+        .array(
+          z.object({
+            price: yen.positive(),
+            demand: z.number().positive(),
+            minReviews: count,
+          }),
+        )
+        .min(1),
+      defaultLevel: count,
+    })
+    .refine((m) => m.defaultLevel < m.priceLevels.length, { message: 'defaultLevel が段階の外' })
+    .refine((m) => m.priceLevels.every((l, i, a) => i === 0 || a[i - 1]!.price < l.price), {
+      message: '出品価格は安い順に並べる',
+    }),
   taskSeconds: z.object({
     disassemble: seconds,
     assemble: seconds,
@@ -51,6 +70,7 @@ export const BalanceSchema = z.object({
   payments: z.object({
     intervalSeconds: seconds,
     utility: yen,
+    rent: yen,
     graceSeconds: seconds,
   }),
   workers: z.object({
@@ -96,16 +116,32 @@ export const TuningSchema = z.object({
     financePeriods: z.number().int().positive(),
     shippedBoxSeconds: seconds,
     maxTicksPerFrame: z.number().int().positive(),
+    /** 支払いが足りないとき、残り何秒から知らせるか */
+    payWarnSeconds: seconds,
+    /** 序盤の導き：この件数を売るまで、次に手を使う列を光らせる */
+    hintUntilSales: count,
+    /** 導き：手が空いてからこの秒数で光らせる */
+    hintIdleSeconds: z.number().nonnegative(),
   }),
   bot: z.object({
     stockHighPcs: count,
-    disassembleBelowPcSets: z.number().positive(),
-    disassembleUpToPcSets: z.number().positive(),
+    disassembleBelowSets: z.number().positive(),
+    disassembleUpToSets: z.number().positive(),
     subUrgencyFactor: z.number().positive(),
     reserveWages: z.number().nonnegative(),
     secondHireDemandRatio: z.number().positive(),
     secondHireWindowSeconds: seconds,
     hireLanes: z.array(LaneSchema).min(1),
+    /** 値段を見直す間隔と、そのとき見る直近の秒数 */
+    priceReviewSeconds: seconds,
+    priceWindowSeconds: seconds,
+    /** この件数以上を逃したら値上げ */
+    raiseWhenLostAtLeast: count,
+    /** 値下げはこの段階まで */
+    priceFloorLevel: count,
+    /** 新品で補うのは、足りない種類がこの数以下で、どれもジャンク1台の値段のこの倍まで安いとき */
+    newPartsMaxMissing: count,
+    newPartsMaxPriceRatio: z.number().positive(),
   }),
 });
 

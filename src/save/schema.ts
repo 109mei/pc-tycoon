@@ -6,6 +6,7 @@ import { LaneSchema } from '../data/schema';
 
 const num = z.number();
 const nullableNum = num.nullable();
+const count = z.number().int().nonnegative();
 
 const TaskSchema = z.object({
   lane: LaneSchema,
@@ -13,6 +14,7 @@ const TaskSchema = z.object({
   total: num,
   kit: z.boolean(),
   subId: nullableNum,
+  price: nullableNum,
 });
 
 const PeriodSchema = z.object({
@@ -27,16 +29,17 @@ export const GameStateSchema = z.object({
   schema: z.number().int(),
   seed: num,
   rng: z.number().int(),
-  tick: z.number().int().nonnegative(),
+  tick: count,
   t: num,
   status: z.enum(['playing', 'bankrupt', 'cleared']),
   cash: num,
-  junk: z.number().int().nonnegative(),
-  parts: z.number().int().nonnegative(),
-  pcs: z.number().int().nonnegative(),
-  orders: z.array(z.object({ id: num, arrivedAt: num })),
+  junk: count,
+  parts: z.object({ board: count, memory: count, storage: count, power: count }),
+  pcs: count,
+  orders: z.array(z.object({ id: num, arrivedAt: num, price: num })),
   nextOrderAt: num,
   nextOrderId: num,
+  priceLevel: count,
   nextPayAt: num,
   graceUntil: nullableNum,
   nextOfferAt: num,
@@ -56,7 +59,7 @@ export const GameStateSchema = z.object({
   nextSubId: num,
   autoBuy: z.boolean(),
   subPriority: z.boolean(),
-  player: z.object({ screen: LaneSchema, holding: z.boolean(), task: TaskSchema.nullable() }),
+  player: z.object({ screen: LaneSchema, holding: z.boolean(), queued: z.boolean(), task: TaskSchema.nullable() }),
   workers: z.array(
     z.object({
       id: num,
@@ -77,6 +80,7 @@ export const GameStateSchema = z.object({
     income: z.array(z.tuple([num, num])),
     asm: z.array(z.tuple([num, num])),
     sold: z.array(num),
+    lost: z.array(num),
   }),
   finance: z.object({ current: PeriodSchema, history: z.array(PeriodSchema) }),
   hireEffect: z
@@ -99,6 +103,10 @@ export const GameStateSchema = z.object({
     kitsAssembled: num,
     disassembled: num,
     junkBought: num,
+    brokenParts: num,
+    newPartsBought: num,
+    newPartsSpent: num,
+    priceChanges: num,
     hires: num,
     subsDone: num,
     subsFailed: num,

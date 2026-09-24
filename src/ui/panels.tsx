@@ -1,15 +1,28 @@
 import { useShallow } from 'zustand/react/shallow';
-import { game, refreshView, useGame } from '../store/game';
+import { PART_TYPES } from '../core/types';
+import { buyMissingParts, game, refreshView, setPriceLevel, useGame } from '../store/game';
 import { secs, yen } from './format';
-import { FileText, Lock, Package, PcCase, ShoppingBag, Smartphone, Wrench } from './icons';
+import {
+  FileText,
+  Lock,
+  Minus,
+  PartIcon,
+  PcCase,
+  Plus,
+  Recycle,
+  ShoppingBag,
+  ShoppingCart,
+  Smartphone,
+  Star,
+  Timer,
+  Wrench,
+} from './icons';
 import { Ring } from './Ring';
 
-/** 部品の四角の色（部屋の部品と同じ並び） */
-const PART_COLORS = ['var(--part-a)', 'var(--part-b)', 'var(--part-c)'];
-/** パネルに並べる四角・アイコンの上限（あふれた分は +n） */
-const MAX_SQUARES = 16;
-const MAX_PC_ICONS = 12;
-const MAX_ORDER_ROWS = 3;
+/** 注文の輪を並べる数の上限（あふれた分は +n） */
+const MAX_ORDER_CHIPS = 5;
+/** 新品で補うボタンを出すのは、足りないのがこの種類数までのとき（全部を新品で買うと損になるため） */
+const MAX_NEW_MISSING = 2;
 
 export function LanePanel() {
   const screen = useGame((st) => st.view!.screen);
@@ -38,7 +51,7 @@ function Toggle({ on, onChange, label, testId }: { on: boolean; onChange: (v: bo
   );
 }
 
-// ---------------------------------------------------------------- 生産
+// ---------------------------------------------------------------- 生産：仕入れと検品
 
 function ProductionPanel() {
   const v = useGame(
@@ -46,11 +59,13 @@ function ProductionPanel() {
       const view = st.view!;
       return {
         price: view.junkPrice,
-        avg: view.avgYield,
         affordable: view.affordableJunk,
         auto: view.autoBuy,
-        parts: view.counts.asm,
-        stuck: view.bottleneck === 'asm',
+        parts: view.parts,
+        sets: view.sets,
+        broken: view.brokenParts,
+        inspection: st.inspection,
+        avg: view.goodParts,
       };
     }),
   );
@@ -58,68 +73,83 @@ function ProductionPanel() {
     game().buyJunk(n);
     refreshView();
   };
+  // 足りない色は、0個か、ほかより少ない種類にだけ付ける
+  const counts = PART_TYPES.map((t) => v.parts[t]);
+  const low = Math.min(...counts);
+  const isScarce = (n: number) => n === low && (low === 0 || Math.max(...counts) > low);
   return (
     <div className="panels">
       <section className="card panel-card lane-dis" aria-label="仕入れ">
         <div className="card-head">
-          <Smartphone size={19} strokeWidth={2.3} className="lane-ink" />
+          <Smartphone size={18} strokeWidth={2.3} className="lane-ink" />
           仕入れ
+          <span className="head-right">
+            <Toggle label="自動" on={v.auto} onChange={(on) => game().setAutoBuy(on)} testId="auto-buy" />
+          </span>
         </div>
         <div className="price">
           {yen(v.price)}
           <small>/台</small>
         </div>
         <div className="yield">
-          <Wrench size={15} strokeWidth={2.4} />
+          <Wrench size={14} strokeWidth={2.4} />
           部品 平均{v.avg.toFixed(1)}個
         </div>
-        <div className="buy-area">
-          <Toggle label="自動" on={v.auto} onChange={(on) => game().setAutoBuy(on)} testId="auto-buy" />
-          <div className="buy-row">
-            <button className="btn-outline lane-dis" disabled={v.affordable < 1} onClick={() => buy(1)} data-testid="buy-1">
-              ×1
-            </button>
-            <button className="btn-fill lane-dis" disabled={v.affordable < 1} onClick={() => buy(5)} data-testid="buy-5">
-              ×5
-            </button>
-          </div>
+        <div className="buy-row">
+          <button className="btn-outline lane-dis" disabled={v.affordable < 1} onClick={() => buy(1)} data-testid="buy-1">
+            ×1
+          </button>
+          <button className="btn-fill lane-dis" disabled={v.affordable < 1} onClick={() => buy(5)} data-testid="buy-5">
+            ×5
+          </button>
         </div>
       </section>
-      <section className="card panel-card lane-asm" aria-label="制作へ送った部品">
+      <section className="card panel-card lane-asm" aria-label="部品">
         <div className="card-head">
-          <Wrench size={19} strokeWidth={2.3} className="lane-ink" />
-          制作へ送った部品
+          <Wrench size={18} strokeWidth={2.3} className="lane-ink" />
+          部品
+          <span className="head-right broken" title="捨てた部品" data-testid="broken">
+            <Recycle size={15} strokeWidth={2.4} />
+            {v.broken}
+          </span>
         </div>
-        <div className="big-count" data-testid="parts">
-          {v.parts}
-          <small>個</small>
-        </div>
-        <div className="squares">
-          {Array.from({ length: Math.min(v.parts, MAX_SQUARES) }, (_, i) => (
-            <span key={i} style={{ background: PART_COLORS[i % PART_COLORS.length] }} />
+        <div className="part-grid" data-testid="parts">
+          {PART_TYPES.map((t) => (
+            <span key={t} className={`part-count part-${t}${isScarce(v.parts[t]) ? ' scarce' : ''}`} data-testid={`part-${t}`}>
+              <PartIcon part={t} size={17} strokeWidth={2.3} />
+              <b>{v.parts[t]}</b>
+            </span>
           ))}
-          {v.parts > MAX_SQUARES && <em>+{v.parts - MAX_SQUARES}</em>}
         </div>
-        {v.stuck && (
-          <div className="stuck-pill">
-            <Wrench size={16} strokeWidth={2.4} />
-            制作で詰まり中
-          </div>
-        )}
+        <div className="inspect-strip" aria-label="直前の検品">
+          {v.inspection !== null &&
+            PART_TYPES.map((t) => {
+              const ok = v.inspection!.good.includes(t);
+              return (
+                <span key={`${v.inspection!.n}-${t}`} className={`inspect-dot part-${t}${ok ? ' ok' : ' ng'}`}>
+                  <PartIcon part={t} size={13} strokeWidth={2.6} />
+                </span>
+              );
+            })}
+        </div>
       </section>
     </div>
   );
 }
 
-// ---------------------------------------------------------------- 制作
+// ---------------------------------------------------------------- 制作：部品をそろえて組む
 
 function AssemblyPanel() {
   const v = useGame(
     useShallow((st) => {
       const view = st.view!;
       return {
-        price: view.salePrice,
-        pcs: view.counts.ship,
+        price: view.price,
+        parts: view.parts,
+        sets: view.sets,
+        missing: view.missing,
+        cost: view.missingCost,
+        canBuy: view.canBuyMissing,
         sub: view.sub,
         priority: view.subPriority,
       };
@@ -129,119 +159,163 @@ function AssemblyPanel() {
     <div className="panels panels-asm">
       <section className="card panel-card lane-asm" aria-label="つくる物">
         <div className="card-head">
-          <PcCase size={19} strokeWidth={2.3} className="lane-ink" />
+          <PcCase size={18} strokeWidth={2.3} className="lane-ink" />
           つくる物
         </div>
         <div className="product">
-          <PcCase size={30} strokeWidth={2.2} className="lane-ink" />
-          <div className="product-body">
-            <div className="product-line">
-              <b>再生PC</b>
-              <span>{yen(v.price)}</span>
-            </div>
-            <div className="recipe">
-              {PART_COLORS.concat('var(--part-d)').map((c, i) => (
-                <span key={i} style={{ background: c }} />
-              ))}
-              <span className="recipe-arrow">›</span>
-              <PcCase size={18} strokeWidth={2.2} />
-            </div>
+          <div className="product-line">
+            <b>再生PC</b>
+            <span>{yen(v.price)}</span>
+          </div>
+          <div className="recipe" data-testid="recipe">
+            {PART_TYPES.map((t) => (
+              <span key={t} className={`recipe-part part-${t}${v.parts[t] > 0 ? ' have' : ' need'}`}>
+                <PartIcon part={t} size={15} strokeWidth={2.4} />
+              </span>
+            ))}
+            <span className="recipe-arrow">›</span>
+            <PcCase size={18} strokeWidth={2.2} />
           </div>
         </div>
         {v.sub !== null ? (
-          <>
-            <div className="sub-box" data-testid="sub-box">
-              <FileText size={16} strokeWidth={2.4} />
-              <span className="sub-left">
-                {v.sub.left}/{v.sub.units}台
-              </span>
-              <span className="sub-time">{secs(v.sub.deadlineLeft)}</span>
-              <Toggle label="優先" on={v.priority} onChange={(on) => game().setSubcontractPriority(on)} testId="sub-priority" />
-            </div>
-            <div className="locked-row">
-              <span className="locked-chip">
-                <Lock size={13} strokeWidth={2.4} />
-                事務用PC
-              </span>
-              <span className="locked-chip">
-                <Lock size={13} strokeWidth={2.4} />
-                ゲーミングPC
-              </span>
-            </div>
-          </>
+          <div className="sub-box" data-testid="sub-box">
+            <FileText size={15} strokeWidth={2.4} />
+            <span className="sub-left">
+              {v.sub.left}/{v.sub.units}台
+            </span>
+            <span className="sub-time">{secs(v.sub.deadlineLeft)}</span>
+            <Toggle label="優先" on={v.priority} onChange={(on) => game().setSubcontractPriority(on)} testId="sub-priority" />
+          </div>
         ) : (
-          <>
-            <div className="locked">
-              <Lock size={15} strokeWidth={2.4} />
+          <div className="locked-row">
+            <span className="locked-chip">
+              <Lock size={12} strokeWidth={2.4} />
               事務用PC
-            </div>
-            <div className="locked">
-              <Lock size={15} strokeWidth={2.4} />
+            </span>
+            <span className="locked-chip">
+              <Lock size={12} strokeWidth={2.4} />
               ゲーミングPC
-            </div>
-          </>
+            </span>
+          </div>
         )}
       </section>
-      <section className="card panel-card lane-ship" aria-label="販売へ">
+      <section className="card panel-card lane-ship sets-card" aria-label="組める台数">
         <div className="card-head">
-          <Package size={19} strokeWidth={2.3} className="lane-ink" />
-          販売へ
+          <Wrench size={18} strokeWidth={2.3} className="lane-ink-asm" />
+          組める
         </div>
-        <div className="big-count" data-testid="pcs">
-          {v.pcs}
-          <small>台</small>
-        </div>
-        <div className="pc-icons lane-ink">
-          {Array.from({ length: Math.min(v.pcs, MAX_PC_ICONS) }, (_, i) => (
-            <PcCase key={i} size={22} strokeWidth={2.2} />
-          ))}
-          {v.pcs > MAX_PC_ICONS && <em>+{v.pcs - MAX_PC_ICONS}</em>}
-        </div>
+        {v.sets > 0 || v.missing.length > MAX_NEW_MISSING ? (
+          <div className="big-count" data-testid="sets">
+            {v.sets}
+            <small>台</small>
+          </div>
+        ) : (
+          <>
+            <div className="missing-row" data-testid="missing">
+              {v.missing.map((t) => (
+                <span key={t} className={`missing-part part-${t}`}>
+                  <PartIcon part={t} size={18} strokeWidth={2.4} />
+                </span>
+              ))}
+            </div>
+            <button className="btn-new" disabled={!v.canBuy} onClick={buyMissingParts} data-testid="buy-missing">
+              <ShoppingCart size={17} strokeWidth={2.4} />
+              {yen(v.cost)}
+            </button>
+          </>
+        )}
       </section>
     </div>
   );
 }
 
-// ---------------------------------------------------------------- 販売
+// ---------------------------------------------------------------- 販売：値段と注文
 
 function SalesPanel() {
   const v = useGame(
     useShallow((st) => {
       const view = st.view!;
-      return { orders: view.orders, lost: view.lost, offer: view.offer, price: view.salePrice };
+      return {
+        orders: view.orders,
+        lost: view.lost,
+        offer: view.offer,
+        level: view.priceLevel,
+        levels: view.priceLevels,
+        price: view.price,
+        net: view.saleNet,
+        interval: view.orderInterval,
+        reviews: view.reviews,
+      };
     }),
   );
-  const rows = v.offer !== null ? MAX_ORDER_ROWS : MAX_ORDER_ROWS + 1;
-  const shown = v.orders.slice(0, rows);
+  const up = v.levels[v.level + 1];
+  const down = v.levels[v.level - 1];
+  const shown = v.orders.slice(0, MAX_ORDER_CHIPS);
   return (
     <section className="card sales-card lane-ship" aria-label="フリマの注文">
       <div className="card-head">
-        <Smartphone size={19} strokeWidth={2.3} className="lane-ink" />
+        <Smartphone size={18} strokeWidth={2.3} className="lane-ink" />
         フリマの注文
-        {v.orders.length > rows && <span className="more">+{v.orders.length - rows}</span>}
+        <span className="reviews" data-testid="reviews">
+          <Star size={14} strokeWidth={2.6} />
+          {v.reviews}
+        </span>
         <span className="lost-pill" data-testid="lost" data-value={v.lost}>
           × {v.lost}
         </span>
       </div>
-      <ul className="orders" data-testid="orders" data-count={v.orders.length}>
-        {shown.map((o) => (
-          <li key={o.id} className={o.urgent ? 'urgent' : undefined}>
-            <span className="order-ring">
-              <Ring
-                value={o.fraction}
-                size={34}
-                width={4}
-                color={o.urgent ? 'var(--warn)' : 'var(--ship)'}
-                track="var(--line)"
-              />
-              <ShoppingBag size={15} strokeWidth={2.4} />
+      <div className="price-row">
+        <button
+          className="step-btn"
+          aria-label="値下げ"
+          data-testid="price-down"
+          disabled={down === undefined}
+          onClick={() => setPriceLevel(v.level - 1)}
+        >
+          <Minus size={20} strokeWidth={2.8} />
+        </button>
+        <div className="price-now" data-testid="price" data-value={v.price}>
+          <b>{yen(v.price)}</b>
+          <small>手取り {yen(v.net)}</small>
+        </div>
+        <button
+          className="step-btn"
+          aria-label="値上げ"
+          data-testid="price-up"
+          disabled={up === undefined || up.locked}
+          onClick={() => setPriceLevel(v.level + 1)}
+        >
+          {up !== undefined && up.locked ? (
+            <span className="step-lock">
+              <Lock size={13} strokeWidth={2.6} />
+              <small>
+                <Star size={10} strokeWidth={3} />
+                {up.minReviews}
+              </small>
             </span>
-            <span className="order-name">再生PC</span>
-            <span className="order-price">{yen(v.price)}</span>
-            <span className="order-left">{secs(o.left)}</span>
-          </li>
+          ) : (
+            <Plus size={20} strokeWidth={2.8} />
+          )}
+        </button>
+        <span className="order-rate" data-testid="order-rate">
+          <Timer size={15} strokeWidth={2.4} />
+          {v.interval.toFixed(1)}秒
+        </span>
+      </div>
+      <div className="order-chips" data-testid="orders" data-count={v.orders.length}>
+        {shown.map((o) => (
+          <span key={o.id} className={`order-chip${o.urgent ? ' urgent' : ''}`}>
+            <Ring value={o.fraction} size={40} width={4} color={o.urgent ? 'var(--warn)' : 'var(--ship)'} track="var(--line)" />
+            <b>{Math.ceil(o.left - 1e-6)}</b>
+          </span>
         ))}
-      </ul>
+        {v.orders.length > MAX_ORDER_CHIPS && <em>+{v.orders.length - MAX_ORDER_CHIPS}</em>}
+        {v.orders.length === 0 && (
+          <span className="order-chip waiting" aria-label="注文待ち">
+            <ShoppingBag size={16} strokeWidth={2.4} />
+          </span>
+        )}
+      </div>
       {v.offer !== null && (
         <div className="offer" data-testid="offer">
           <span className="offer-ring">

@@ -1,7 +1,16 @@
 import type { Balance } from '../data/schema';
 import { nextRandom } from './rng';
-import { saleNet, taskSeconds } from './state';
-import type { Actor, GameEvent, GameState, Lane, Task, Worker } from './types';
+import { saleNet, setsOf, taskSeconds } from './state';
+import {
+  PART_TYPES,
+  type Actor,
+  type GameEvent,
+  type GameState,
+  type Lane,
+  type PartType,
+  type Task,
+  type Worker,
+} from './types';
 
 /** 残り時間がこれ以下なら作業は終わり（小数の誤差よけ） */
 const DONE_EPSILON = 1e-9;
@@ -21,14 +30,15 @@ export function spend(s: GameState, amount: number): void {
   s.finance.current.costs += amount;
 }
 
-export function drawYield(s: GameState, bal: Balance): number {
-  const r = nextRandom(s);
-  let acc = 0;
-  for (const row of bal.junk.partsYield) {
-    acc += row.probability;
-    if (r < acc) return row.parts;
+/** 検品：部品ごとに、使えるか壊れているかを決める（乱数を種類の順に1つずつ使う） */
+export function inspect(s: GameState, bal: Balance): { good: PartType[]; broken: PartType[] } {
+  const good: PartType[] = [];
+  const broken: PartType[] = [];
+  for (const t of PART_TYPES) {
+    if (nextRandom(s) < bal.junk.goodRate[t]) good.push(t);
+    else broken.push(t);
   }
-  return bal.junk.partsYield[bal.junk.partsYield.length - 1]!.parts;
+  return { good, broken };
 }
 
 export function kitsLeft(s: GameState): number {
@@ -38,10 +48,10 @@ export function kitsLeft(s: GameState): number {
 /** 組み立てに何を使うか。始められなければ null */
 export function pickAssemblyMaterial(
   s: GameState,
-  bal: Balance,
+  _bal: Balance,
   material: Material,
 ): 'parts' | 'kit' | null {
-  const hasParts = s.parts >= bal.pc.partsPerPc;
+  const hasParts = setsOf(s.parts) >= 1;
   const hasKit = kitsLeft(s) > 0;
   if (material === 'parts') return hasParts ? 'parts' : null;
   if (material === 'kit') return hasKit ? 'kit' : null;
@@ -66,6 +76,7 @@ export function beginTask(
 ): Task | null {
   let kit = false;
   let subId: number | null = null;
+  let price: number | null = null;
   if (lane === 'dis') {
     if (s.junk <= 0) return null;
     s.junk -= 1;
@@ -77,23 +88,24 @@ export function beginTask(
       kit = true;
       subId = s.sub!.id;
     } else {
-      s.parts -= bal.pc.partsPerPc;
+      for (const t of PART_TYPES) s.parts[t] -= 1;
     }
   } else {
     if (s.pcs <= 0 || s.orders.length === 0) return null;
     s.pcs -= 1;
-    s.orders.shift();
+    price = s.orders.shift()!.price;
   }
   const total = taskSeconds(bal, lane, speed);
-  return { lane, remaining: total, total, kit, subId };
+  return { lane, remaining: total, total, kit, subId, price };
 }
 
 export function finishTask(s: GameState, bal: Balance, task: Task, by: Actor, ev: GameEvent[]): void {
   if (task.lane === 'dis') {
-    const n = drawYield(s, bal);
-    s.parts += n;
+    const { good, broken } = inspect(s, bal);
+    for (const t of good) s.parts[t] += 1;
     s.stats.disassembled += 1;
-    ev.push({ type: 'disassembled', parts: n, by });
+    s.stats.brokenParts += broken.length;
+    ev.push({ type: 'disassembled', good, broken, by });
   } else if (task.lane === 'asm') {
     s.recent.asm.push([s.t, task.kit ? 1 : 0]);
     if (task.kit) {
@@ -116,13 +128,14 @@ export function finishTask(s: GameState, bal: Balance, task: Task, by: Actor, ev
       ev.push({ type: 'assembled', kit: false, by });
     }
   } else {
-    const amount = saleNet(bal);
+    const price = task.price ?? 0;
+    const amount = saleNet(bal, price);
     earn(s, amount);
     s.stats.sold += 1;
     s.finance.current.sold += 1;
     s.recent.sold.push(s.t);
     if (s.stats.firstSaleAt === null) s.stats.firstSaleAt = s.t;
-    ev.push({ type: 'sold', amount, by });
+    ev.push({ type: 'sold', amount, price, by });
   }
 }
 

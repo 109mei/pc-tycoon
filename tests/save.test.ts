@@ -72,13 +72,43 @@ describe('セーブ', () => {
     const old = { ...JSON.parse(serialize(data)), saveVersion: 0, legacy: true };
     MIGRATIONS[0] = (d) => {
       const { legacy: _legacy, ...rest } = d;
-      return rest;
+      return { ...rest, saveVersion: 1 };
     };
+    const v1 = MIGRATIONS[1]!;
+    MIGRATIONS[1] = (d) => d;
     try {
       expect(migrate(old)).toEqual(data);
     } finally {
       delete MIGRATIONS[0];
+      MIGRATIONS[1] = v1;
     }
+  });
+
+  it('版1（部品が1種類だった試作1）のセーブを版2に変換して読める', () => {
+    const v2 = sample();
+    const st = JSON.parse(serialize(v2)).state;
+    // 版1の形に戻す：部品は個数、注文と作業に値段がない、出品価格と新しい記録がない
+    st.parts = 9;
+    st.orders = st.orders.map(({ price: _p, ...o }: { price: number }) => o);
+    delete st.priceLevel;
+    const strip = (t: { price?: number } | null) => {
+      if (t) delete t.price;
+      return t;
+    };
+    strip(st.player.task);
+    delete st.player.queued;
+    for (const w of st.workers) strip(w.task);
+    delete st.recent.lost;
+    for (const k of ['brokenParts', 'newPartsBought', 'newPartsSpent', 'priceChanges']) delete st.stats[k];
+    st.schema = 1;
+    const v1 = { saveVersion: 1, savedAt: 1, screen: 'dis', settings: { theme: 'auto' }, state: st };
+    const back = migrate(v1);
+    expect(back.saveVersion).toBe(SAVE_VERSION);
+    expect(back.state.parts).toEqual({ board: 2, memory: 2, storage: 2, power: 2 });
+    expect(back.state.priceLevel).toBe(bal.market.defaultLevel);
+    for (const o of back.state.orders) expect(o.price).toBe(bal.market.priceLevels[bal.market.defaultLevel]!.price);
+    for (let i = 0; i < 600; i++) step(back.state, bal);
+    expect(back.state.status).toBe('playing');
   });
 
   it('新しすぎる版・壊れたセーブは読み込まない', () => {

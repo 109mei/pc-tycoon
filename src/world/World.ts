@@ -1,11 +1,14 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import type { GameState, Lane } from '../core/types';
-import type { Balance } from '../data/schema';
+import type { GameEvent, GameState, Lane } from '../core/types';
+import { Fx } from './fx';
+import { project } from './isoMath';
 import { ROOM_LAYOUT, STAGE, peopleIn } from './layout';
 import { roomPalette, type Theme } from './palette';
 import { drawPeople, drawProgressRings } from './people';
 import { drawRoomShell, roomScene } from './rooms';
-import { drawEdgeGlow } from './shell';
+
+/** 廃棄箱にたまって見える壊れた部品の上限（これを超えたら空にして入れ直す） */
+const EWASTE_CAPACITY = 12;
 
 /**
  * 部屋の描画（PixiJS）。ルール本体の状態を毎フレーム読んで描くだけで、状態は書き換えない。
@@ -15,16 +18,18 @@ export class World {
   private readonly shellG = new Graphics();
   private readonly glowG = new Graphics();
   private readonly sceneG = new Graphics();
+  private readonly fx = new Fx();
   private readonly peopleG = new Graphics();
   private readonly ringsG = new Graphics();
   private lane: Lane | null = null;
   private theme: Theme | null = null;
   private sceneKey = '';
   private glowLane: Lane | null = null;
+  private lastMs: number | null = null;
 
   private constructor(private readonly app: Application) {
     const root = new Container();
-    root.addChild(this.shellG, this.glowG, this.sceneG, this.peopleG, this.ringsG);
+    root.addChild(this.shellG, this.glowG, this.sceneG, this.fx.root, this.peopleG, this.ringsG);
     app.stage.addChild(root);
   }
 
@@ -60,14 +65,17 @@ export class World {
   }
 
   /** 毎フレーム呼ぶ。見ている部屋（今いる画面）を描く */
-  render(s: GameState, bal: Balance, theme: Theme, nowMs: number): void {
+  render(s: GameState, theme: Theme, nowMs: number, events: GameEvent[]): void {
     const lane = s.player.screen;
     const pal = roomPalette(theme);
     const L = ROOM_LAYOUT[lane];
-    const roomChanged = lane !== this.lane || theme !== this.theme;
-    if (roomChanged) {
+    const dt = this.lastMs === null ? 0 : Math.min(0.1, Math.max(0, (nowMs - this.lastMs) / 1000));
+    this.lastMs = nowMs;
+
+    if (lane !== this.lane || theme !== this.theme) {
       this.shellG.clear();
       drawRoomShell(this.shellG, lane, pal);
+      if (lane !== this.lane) this.fx.reset();
       this.lane = lane;
       this.theme = theme;
       this.sceneKey = '';
@@ -78,25 +86,32 @@ export class World {
     const stuck = s.bottleneck.shown === lane;
     if (stuck && this.glowLane !== lane) {
       this.glowG.clear();
-      drawEdgeGlow(this.glowG, L, pal.laneEdge[lane]);
+      drawEdgeGlow(this.glowG, lane, pal.laneEdge[lane]);
       this.glowLane = lane;
     }
     this.glowG.visible = stuck;
     if (stuck) this.glowG.alpha = 0.7 + 0.3 * Math.sin(nowMs / 260);
 
-    const scene = roomScene(lane, s, bal);
+    this.fx.onEvents(events, lane, pal);
+    const scene = roomScene(lane, s, {
+      broken: s.stats.brokenParts % EWASTE_CAPACITY,
+      boxesWaiting: this.fx.boxesWaiting,
+      installing: 0,
+    });
     const key = `${theme}|${scene.key}`;
     if (key !== this.sceneKey) {
       this.sceneG.clear();
       scene.draw(this.sceneG, pal);
       this.sceneKey = key;
     }
+    this.fx.update(dt, s, lane, pal);
 
     const people = peopleIn(s, lane);
     this.peopleG.clear();
-    drawPeople(this.peopleG, pal, people);
+    drawPeople(this.peopleG, pal, people, nowMs);
     this.ringsG.clear();
     drawProgressRings(this.ringsG, pal, people, lane);
+    void L;
 
     this.app.render();
   }
@@ -104,4 +119,17 @@ export class World {
   destroy(): void {
     this.app.destroy(true, { children: true });
   }
+}
+
+/** 床の縁を列の色で光らせる帯 */
+function drawEdgeGlow(g: Graphics, lane: Lane, color: number): void {
+  const L = ROOM_LAYOUT[lane];
+  const b = 0.24;
+  const flat = (pts: [number, number][]) =>
+    pts.flatMap(([x, y]) => {
+      const q = project(L.frame, x, y, 0);
+      return [q.x, q.y];
+    });
+  g.poly(flat([[0, 0], [L.w, 0], [L.w, L.d], [0, L.d]])).fill({ color });
+  g.poly(flat([[b, b], [L.w - b, b], [L.w - b, L.d - b], [b, L.d - b]])).cut();
 }

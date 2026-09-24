@@ -1,7 +1,17 @@
-import { hireBadge } from '../core/bot';
+import { hireBadge, suggestLane } from '../core/bot';
 import { canStart } from '../core/tasks';
-import { expectedYield, nextBill, saleNet } from '../core/state';
-import type { GameState, Lane, Status } from '../core/types';
+import {
+  expectedGoodParts,
+  missingCost,
+  missingTypes,
+  nextBill,
+  orderRate,
+  priceLevelOf,
+  priceLevelUnlocked,
+  saleNet,
+  setsOf,
+} from '../core/state';
+import type { GameState, Lane, Parts, PartType, Status } from '../core/types';
 import type { Balance } from '../data/schema';
 
 /**
@@ -15,6 +25,7 @@ export interface OrderView {
   /** 残り時間の割合（1→0） */
   fraction: number;
   urgent: boolean;
+  price: number;
 }
 
 export interface WorkerView {
@@ -32,6 +43,20 @@ export interface PeriodView {
   current: boolean;
 }
 
+export interface PriceLevelView {
+  price: number;
+  minReviews: number;
+  locked: boolean;
+}
+
+/** 作業ボタンが押せない理由（足りない物） */
+export type WorkBlock =
+  | { kind: 'junk' }
+  | { kind: 'parts'; missing: PartType[] }
+  | { kind: 'pcs' }
+  | { kind: 'orders' }
+  | null;
+
 export interface ViewModel {
   t: number;
   status: Status;
@@ -42,22 +67,40 @@ export interface ViewModel {
   clearReady: boolean;
   payIn: number;
   payAmount: number;
+  /** 次の支払いに足りず、支払いが近い */
+  payShort: boolean;
   graceLeft: number | null;
-  /** 切り替えバーの量（生産＝ジャンク、制作＝部品、販売＝完成品） */
+  /** 切り替えバーの量（生産＝ジャンク、制作＝組める台数、販売＝完成品） */
   counts: Record<Lane, number>;
   bottleneck: Lane | null;
   workersByLane: Record<Lane, number>;
   canWork: Record<Lane, boolean>;
+  block: Record<Lane, WorkBlock>;
   holding: boolean;
   /** 自分の作業の進み具合（その列の作業をしているときだけ） */
   playerProgress: Record<Lane, number | null>;
+  playerBusy: boolean;
+  /** 序盤の導き：想定の遊び方なら次に手を使う列 */
+  hintLane: Lane | null;
   autoBuy: boolean;
+  junk: number;
   junkPrice: number;
-  avgYield: number;
+  goodParts: number;
   affordableJunk: number;
-  partsPerPc: number;
-  salePrice: number;
+  parts: Parts;
+  sets: number;
+  missing: PartType[];
+  missingCost: number;
+  canBuyMissing: boolean;
+  brokenParts: number;
+  pcs: number;
+  priceLevel: number;
+  price: number;
   saleNet: number;
+  priceLevels: PriceLevelView[];
+  /** 今の値段・評価での注文の平均間隔（秒） */
+  orderInterval: number;
+  reviews: number;
   orders: OrderView[];
   lost: number;
   offer: { units: number; fee: number; penalty: number; deadline: number; left: number; fraction: number } | null;
@@ -101,26 +144,50 @@ function incomePerSecond(s: GameState, bal: Balance): number {
   return sum / span;
 }
 
+function blockOf(s: GameState, bal: Balance, lane: Lane): WorkBlock {
+  if (canStart(s, bal, lane)) return null;
+  if (lane === 'dis') return { kind: 'junk' };
+  if (lane === 'asm') return { kind: 'parts', missing: missingTypes(s.parts) };
+  return s.pcs <= 0 ? { kind: 'pcs' } : { kind: 'orders' };
+}
+
 export function buildView(s: GameState, bal: Balance): ViewModel {
   const workersByLane: Record<Lane, number> = { dis: 0, asm: 0, ship: 0 };
   for (const w of s.workers) if (!w.resting) workersByLane[w.lane] += 1;
   const canWork = {} as Record<Lane, boolean>;
+  const block = {} as Record<Lane, WorkBlock>;
   const playerProgress = {} as Record<Lane, number | null>;
   for (const lane of LANES) {
     canWork[lane] = canStart(s, bal, lane);
+    block[lane] = blockOf(s, bal, lane);
     const task = s.player.task;
     playerProgress[lane] = task !== null && task.lane === lane ? 1 - task.remaining / task.total : null;
   }
   const patience = bal.orders.patienceSeconds;
   const orders: OrderView[] = s.orders.map((o) => {
     const left = Math.max(0, patience - (s.t - o.arrivedAt));
-    return { id: o.id, left, fraction: left / patience, urgent: left <= bal.display.orderUrgentSeconds };
+    return {
+      id: o.id,
+      left,
+      fraction: left / patience,
+      urgent: left <= bal.display.orderUrgentSeconds,
+      price: o.price,
+    };
   });
   const sc = bal.subcontract;
   const periods: PeriodView[] = [
     ...s.finance.history.map((p) => ({ ...pick(p), current: false })),
     { ...pick(s.finance.current), current: true },
   ];
+  const level = priceLevelOf(s, bal);
+  const payAmount = nextBill(s, bal);
+  const payIn = Math.max(0, s.nextPayAt - s.t);
+  const cost = missingCost(s, bal);
+  const missing = missingTypes(s.parts);
+  const hintLane =
+    s.status === 'playing' && s.stats.sold < bal.display.hintUntilSales && s.player.task === null
+      ? suggestLane(s, bal)
+      : null;
   return {
     t: s.t,
     status: s.status,
@@ -129,22 +196,41 @@ export function buildView(s: GameState, bal: Balance): ViewModel {
     incomePerSec: incomePerSecond(s, bal),
     warehousePct: Math.max(0, Math.min(100, (s.cash / bal.stage1.clearCash) * 100)),
     clearReady: s.status === 'playing' && s.cash >= bal.stage1.clearCash,
-    payIn: Math.max(0, s.nextPayAt - s.t),
-    payAmount: nextBill(s, bal),
+    payIn,
+    payAmount,
+    payShort: s.cash < payAmount && payIn <= bal.display.payWarnSeconds,
     graceLeft: s.graceUntil !== null ? Math.max(0, s.graceUntil - s.t) : null,
-    counts: { dis: s.junk, asm: s.parts, ship: s.pcs },
+    counts: { dis: s.junk, asm: setsOf(s.parts), ship: s.pcs },
     bottleneck: s.bottleneck.shown,
     workersByLane,
     canWork,
+    block,
     holding: s.player.holding,
     playerProgress,
+    playerBusy: s.player.task !== null,
+    hintLane,
     autoBuy: s.autoBuy,
+    junk: s.junk,
     junkPrice: bal.junk.price,
-    avgYield: expectedYield(bal),
+    goodParts: expectedGoodParts(bal),
     affordableJunk: Math.floor(Math.max(0, s.cash) / bal.junk.price),
-    partsPerPc: bal.pc.partsPerPc,
-    salePrice: bal.pc.salePrice,
-    saleNet: saleNet(bal),
+    parts: { ...s.parts },
+    sets: setsOf(s.parts),
+    missing,
+    missingCost: cost,
+    canBuyMissing: s.status === 'playing' && missing.length > 0 && s.cash >= cost,
+    brokenParts: s.stats.brokenParts,
+    pcs: s.pcs,
+    priceLevel: s.priceLevel,
+    price: level.price,
+    saleNet: saleNet(bal, level.price),
+    priceLevels: bal.market.priceLevels.map((l, i) => ({
+      price: l.price,
+      minReviews: l.minReviews,
+      locked: !priceLevelUnlocked(s, bal, i),
+    })),
+    orderInterval: 1 / orderRate(s, bal),
+    reviews: s.stats.sold,
     orders,
     lost: s.stats.ordersLost,
     offer:

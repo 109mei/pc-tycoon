@@ -2,10 +2,11 @@ import type { Balance } from '../data/schema';
 import type { Policy } from './bot';
 import { step } from './step';
 import { createState } from './state';
-import type { GameState } from './types';
+import type { GameEvent, GameState } from './types';
 
 /**
- * 手触りの目安を測るための記録と指標。docs/sim_stage1.py の run() / metrics() の移植。
+ * 手触りの目安を測るための記録と指標。docs/sim_stage1.py の run() / metrics() の移植に、
+ * 版2で足した指標（支払いの重さ・後半の値段の見直し）を加えたもの。
  * ゲームの画面からは使わない（テストと scripts/sim.ts 用）。
  */
 
@@ -15,11 +16,15 @@ export interface EpisodeLog {
   sales: number[];
   hires: number[];
   income: [number, number][];
+  paid: [number, number][];
+  priceChanges: number[];
   arrived: number[];
   lost: number[];
   /** 所持金がクリア額に初めて届いた時刻 */
   reach: number | null;
   bankrupt: boolean;
+  /** 猶予に入った回数 */
+  graces: number;
   endT: number;
 }
 
@@ -43,14 +48,17 @@ export function runEpisode(
     sales: [],
     hires: [],
     income: [],
+    paid: [],
+    priceChanges: [],
     arrived: [],
     lost: [],
     reach: null,
     bankrupt: false,
+    graces: 0,
     endT: 0,
   };
   const steps = Math.round(opts.horizonSeconds / bal.tickSeconds);
-  const beforeWork = (st: GameState, ev: Parameters<Policy['act']>[2]) => policy.act(st, bal, ev);
+  const beforeWork = (st: GameState, ev: GameEvent[]) => policy.act(st, bal, ev);
   for (let i = 0; i < steps; i++) {
     const ev = step(s, bal, { beforeWork });
     for (const e of ev) {
@@ -68,11 +76,20 @@ export function runEpisode(
         case 'subFee':
           log.income.push([s.t, e.amount]);
           break;
+        case 'paid':
+          log.paid.push([s.t, e.amount]);
+          break;
+        case 'priceChanged':
+          log.priceChanges.push(s.t);
+          break;
         case 'hired':
           log.hires.push(s.t);
           break;
         case 'bankrupt':
           log.bankrupt = true;
+          break;
+        case 'graceStarted':
+          log.graces += 1;
           break;
         default:
           break;
@@ -96,6 +113,14 @@ export interface EpisodeMetrics {
   incomeJump: number;
   clear: number;
   bankrupt: boolean;
+  /** 猶予に入ったことがある */
+  grace: boolean;
+  /** 2人目を雇ってからクリアまでの、支払い ÷ 収入 */
+  payShareLate: number;
+  /** 雇う前の、支払い ÷ 収入 */
+  payShareEarly: number;
+  /** 2人目を雇ってからクリアまでに値段を変えた回数 */
+  priceChangesLate: number;
 }
 
 function incomeRate(log: EpisodeLog, t0: number, t1: number): number {
@@ -104,6 +129,12 @@ function incomeRate(log: EpisodeLog, t0: number, t1: number): number {
   let sum = 0;
   for (const [t, amount] of log.income) if (t >= a && t < t1) sum += amount;
   return sum / (t1 - a);
+}
+
+function sumIn(rows: [number, number][], t0: number, t1: number): number {
+  let sum = 0;
+  for (const [t, v] of rows) if (t >= t0 && t < t1) sum += v;
+  return sum;
 }
 
 export interface MetricWindows {
@@ -118,15 +149,21 @@ export interface MetricWindows {
 
 export function episodeMetrics(log: EpisodeLog, w: MetricWindows): EpisodeMetrics {
   const h = log.hires[0] ?? Infinity;
+  const h2 = log.hires[1] ?? Infinity;
+  const end = log.reach ?? log.endT;
   const m: EpisodeMetrics = {
     firstSale: log.sales[0] ?? Infinity,
     firstHire: h,
-    secondHire: log.hires[1] ?? Infinity,
+    secondHire: h2,
     lostPre: NaN,
     lostPost: NaN,
     incomeJump: NaN,
     clear: log.reach ?? Infinity,
     bankrupt: log.bankrupt,
+    grace: log.graces > 0,
+    payShareLate: NaN,
+    payShareEarly: NaN,
+    priceChangesLate: NaN,
   };
   if (Number.isFinite(h)) {
     const pre = incomeRate(log, h - w.incomePreSeconds, h);
@@ -134,9 +171,16 @@ export function episodeMetrics(log: EpisodeLog, w: MetricWindows): EpisodeMetric
     m.incomeJump = pre > 0 ? post / pre : NaN;
     const arrPre = log.arrived.filter((t) => t < h).length;
     m.lostPre = arrPre > 0 ? log.lost.filter((t) => t < h).length / arrPre : 0;
-    const end = h + w.lostPostSeconds;
-    const arrPost = log.arrived.filter((t) => t >= h && t < end).length;
-    m.lostPost = arrPost > 0 ? log.lost.filter((t) => t >= h && t < end).length / arrPost : 0;
+    const postEnd = h + w.lostPostSeconds;
+    const arrPost = log.arrived.filter((t) => t >= h && t < postEnd).length;
+    m.lostPost = arrPost > 0 ? log.lost.filter((t) => t >= h && t < postEnd).length / arrPost : 0;
+    const incEarly = sumIn(log.income, 0, h);
+    m.payShareEarly = incEarly > 0 ? sumIn(log.paid, 0, h) / incEarly : NaN;
+  }
+  if (Number.isFinite(h2) && end > h2) {
+    const incLate = sumIn(log.income, h2, end);
+    m.payShareLate = incLate > 0 ? sumIn(log.paid, h2, end) / incLate : NaN;
+    m.priceChangesLate = log.priceChanges.filter((t) => t >= h2 && t < end).length;
   }
   return m;
 }

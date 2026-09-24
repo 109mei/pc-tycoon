@@ -1,4 +1,5 @@
 import type { Balance } from '../data/schema';
+import { nextBill } from './state';
 import { step } from './step';
 import type { GameState, Lane } from './types';
 
@@ -40,6 +41,7 @@ export function simulateAway(s: GameState, bal: Balance, seconds: number): AwayS
   };
   const stuck: Record<Lane, number> = { dis: 0, asm: 0, ship: 0 };
   s.player.holding = false;
+  s.player.queued = false;
   for (let i = 0; i < steps && s.status === 'playing'; i++) {
     const ev = step(s, bal, { away: true });
     for (const e of ev) {
@@ -69,10 +71,18 @@ export function simulateAway(s: GameState, bal: Balance, seconds: number): AwayS
   return summary;
 }
 
-/** 戻ってきたとき：休みを解き、所持金がマイナスなら猶予を始める */
-export function returnFromAway(s: GameState, bal: Balance): void {
+/**
+ * 戻ってきたとき：休みを解き、所持金がマイナスなら猶予を始める。
+ * 支払いの間隔より長くいなかったのに次の支払いに足りないときは、戻ってすぐ払わされないよう、
+ * 支払いを1回分の間隔まで待つ（短い不在で支払いを先延ばしにはできない）。
+ */
+export function returnFromAway(s: GameState, bal: Balance, awaySeconds = 0): void {
   for (const w of s.workers) w.resting = false;
-  if (s.status === 'playing' && s.cash < 0 && (s.graceUntil === null || s.graceUntil < s.t)) {
+  if (s.status !== 'playing') return;
+  if (s.cash < 0 && (s.graceUntil === null || s.graceUntil < s.t)) {
     s.graceUntil = s.t + bal.payments.graceSeconds;
+  }
+  if (awaySeconds >= bal.payments.intervalSeconds && s.cash < nextBill(s, bal)) {
+    s.nextPayAt = Math.max(s.nextPayAt, s.t + bal.payments.intervalSeconds);
   }
 }

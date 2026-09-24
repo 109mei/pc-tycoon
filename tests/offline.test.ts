@@ -10,6 +10,7 @@ import {
   simulateAway,
   smartPolicy,
   step,
+  PART_TYPES,
   type GameState,
 } from '../src/core';
 import { balance as bal } from '../src/data';
@@ -24,7 +25,7 @@ function midGame(seed: number): GameState {
   // 制作と販売に1人ずつ。部品を渡しておき、組み立て→発送→入金が不在中も回るようにする
   reassignWorker(s, s.workers[0]!.id, 'asm');
   reassignWorker(s, s.workers[1]!.id, 'ship');
-  s.parts += 40;
+  for (const t of PART_TYPES) s.parts[t] += 10;
   // 自分の手は動かさない（長押しなし・作業なし）。制作の画面にいないので「手」としても数えない
   s.player.holding = false;
   s.player.task = null;

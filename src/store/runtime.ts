@@ -35,6 +35,7 @@ export class GameRuntime {
   private savedAt = 0;
   private hidden = false;
   private uiEvents: GameEvent[] = [];
+  private worldEvents: GameEvent[] = [];
 
   constructor(opts: RuntimeOptions) {
     this.bal = opts.bal;
@@ -68,7 +69,7 @@ export class GameRuntime {
   private catchUp(seconds: number): AwaySummary | null {
     if (this.state.status !== 'playing' || !(seconds >= this.bal.tickSeconds)) return null;
     const summary = core.simulateAway(this.state, this.bal, seconds);
-    core.returnFromAway(this.state, this.bal);
+    core.returnFromAway(this.state, this.bal, summary.seconds);
     this.save();
     return summary.requestedSeconds >= this.bal.display.awaySummaryMinSeconds ? summary : null;
   }
@@ -102,13 +103,22 @@ export class GameRuntime {
   }
 
   private push(ev: GameEvent[]): void {
-    if (ev.length > 0) this.uiEvents.push(...ev);
+    if (ev.length === 0) return;
+    this.uiEvents.push(...ev);
+    this.worldEvents.push(...ev);
   }
 
   /** 画面の効果（「+¥」など）に使う出来事を取り出す */
   drainEvents(): GameEvent[] {
     const out = this.uiEvents;
     this.uiEvents = [];
+    return out;
+  }
+
+  /** 部屋の動き（部品が飛ぶ・バンが来る）に使う出来事を取り出す */
+  drainWorldEvents(): GameEvent[] {
+    const out = this.worldEvents;
+    this.worldEvents = [];
     return out;
   }
 
@@ -167,6 +177,14 @@ export class GameRuntime {
     core.setAutoBuy(this.state, on);
   }
 
+  buyMissingParts(): void {
+    this.push(core.buyMissingParts(this.state, this.bal));
+  }
+
+  setPriceLevel(level: number): void {
+    this.push(core.setPriceLevel(this.state, this.bal, level));
+  }
+
   forecast(lane: Lane): core.HireForecast {
     return core.forecastHire(this.state, this.bal, lane);
   }
@@ -203,6 +221,7 @@ export class GameRuntime {
     this.seed = this.newSeed();
     this.state = core.restart(this.bal, this.seed);
     this.uiEvents = [];
+    this.worldEvents = [];
     this.acc = 0;
     this.save();
   }
@@ -228,6 +247,7 @@ export class GameRuntime {
     this.state = data.state;
     this.settings = data.settings;
     this.uiEvents = [];
+    this.worldEvents = [];
     this.acc = 0;
     this.save();
   }
@@ -257,6 +277,11 @@ export class GameRuntime {
     const n = Math.round(seconds / this.bal.tickSeconds);
     for (let i = 0; i < n; i++) this.push(core.step(this.state, this.bal));
     core.workHold(this.state, this.bal, this.state.player.screen, false);
+  }
+
+  /** テストの準備：部品の数を決める（?debug=1 のときだけ） */
+  debugSetParts(parts: Partial<core.Parts>): void {
+    for (const t of core.PART_TYPES) if (parts[t] !== undefined) this.state.parts[t] = Math.max(0, Math.floor(parts[t]!));
   }
 
   debugStep(seconds: number): void {

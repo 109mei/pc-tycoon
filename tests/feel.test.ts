@@ -6,14 +6,24 @@ import { formatSummary, measure, type FeelSummary } from './helpers/feel';
 describe('手触りの目安（SPEC 5章）', () => {
   let smart: FeelSummary;
   let nosub: FeelSummary;
+  let fixed: FeelSummary;
+  let noparts: FeelSummary;
+  let reckless: FeelSummary;
   let rotation: FeelSummary;
+  const slower = (f: FeelSummary) => f.clear / smart.clear - 1;
 
   beforeAll(() => {
     smart = measure(balance, 'smart');
     nosub = measure(balance, 'smart_nosub');
+    fixed = measure(balance, 'smart_fixedprice');
+    noparts = measure(balance, 'smart_noparts');
+    reckless = measure(balance, 'reckless');
     rotation = measure(balance, 'rotation');
-    console.log(['', formatSummary(smart), formatSummary(nosub), formatSummary(rotation)].join('\n'));
-    console.log(`下請けを受けないボットのクリアの遅れ: ${((nosub.clear / smart.clear - 1) * 100).toFixed(1)}%`);
+    console.log(['', ...[smart, nosub, fixed, noparts, reckless, rotation].map(formatSummary)].join('\n'));
+    console.log(
+      `クリアの遅れ：下請けなし ${(slower(nosub) * 100).toFixed(1)}% / 値段を変えない ${(slower(fixed) * 100).toFixed(1)}% / 新品で補わない ${(slower(noparts) * 100).toFixed(1)}%`,
+    );
+    console.log(`無謀な遊び方：猶予に入った ${(reckless.rows.filter((r) => r.grace).length)}% / 倒産 ${(reckless.bankruptRate * 100).toFixed(0)}%`);
   });
 
   it('初めて売れるまで 8〜15秒', () => {
@@ -46,12 +56,33 @@ describe('手触りの目安（SPEC 5章）', () => {
   });
 
   it('下請けを受けないボットは、クリアが5〜20%遅い', () => {
-    const slower = nosub.clear / smart.clear - 1;
-    expect(slower).toBeGreaterThanOrEqual(0.05);
-    expect(slower).toBeLessThanOrEqual(0.2);
+    expect(slower(nosub)).toBeGreaterThanOrEqual(0.05);
+    expect(slower(nosub)).toBeLessThanOrEqual(0.2);
   });
 
   it('状況を見ない対照ボットは、想定の遊び方より大きく遅い（15分でクリアできない）', () => {
     expect(rotation.clear).toBe(Infinity);
+  });
+
+  it('値段を変えないボットは、クリアが5%以上遅い（値段の判断に意味がある）', () => {
+    expect(slower(fixed)).toBeGreaterThanOrEqual(0.05);
+  });
+
+  it('後半（2人目を雇った後）にも値段を変える判断がある', () => {
+    expect(smart.priceChangesLate).toBeGreaterThanOrEqual(1);
+  });
+
+  it('足りない部品を新品で補わないボットは、クリアが3%以上遅い', () => {
+    expect(slower(noparts)).toBeGreaterThanOrEqual(0.03);
+  });
+
+  it('後半の支払いは収入の15〜30%（支払いに重さがある）', () => {
+    expect(smart.payShareLate).toBeGreaterThanOrEqual(0.15);
+    expect(smart.payShareLate).toBeLessThanOrEqual(0.3);
+  });
+
+  it('支払いを考えない無謀な遊び方は、30%以上の回で猶予に入る', () => {
+    const graced = reckless.rows.filter((r) => r.grace).length / reckless.rows.length;
+    expect(graced).toBeGreaterThanOrEqual(0.3);
   });
 });

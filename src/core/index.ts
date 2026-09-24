@@ -7,6 +7,8 @@ export {
   setScreen,
   buyJunk,
   setAutoBuy,
+  buyMissingParts,
+  setPriceLevel,
   canHire,
   hire,
   reassignWorker,
@@ -17,11 +19,15 @@ export {
   restart,
   type HireOptions,
 } from './commands';
-export { canStart, kitsLeft, pickAssemblyMaterial, type Material } from './tasks';
+export { canStart, inspect, kitsLeft, pickAssemblyMaterial, type Material } from './tasks';
 export {
   smartChoose,
   smartHireLane,
+  smartBuyParts,
+  smartPriceLevel,
   smartPolicy,
+  recklessPolicy,
+  suggestLane,
   runPolicy,
   forecastHire,
   hireBadge,

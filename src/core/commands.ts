@@ -1,6 +1,7 @@
 import type { Balance } from '../data/schema';
+import { expovariate } from './rng';
 import { countAssembled } from './step';
-import { createState } from './state';
+import { createState, missingCost, missingTypes, orderRate, priceLevelUnlocked } from './state';
 import { spend, startPlayerTask, type Material } from './tasks';
 import type { GameEvent, GameState, Lane } from './types';
 
@@ -13,10 +14,15 @@ function playing(s: GameState): boolean {
   return s.status === 'playing';
 }
 
-/** 作業ボタンのタップ：今いる画面の列で1回だけ作業する。material はボット用（画面からは渡さない） */
+/**
+ * 作業ボタンのタップ：今いる画面の列で1回だけ作業する。手が作業中なら1回だけ予約し、空いたら始める。
+ * material はボット用（画面からは渡さない）
+ */
 export function workTap(s: GameState, bal: Balance, lane: Lane, material: Material = 'auto'): GameEvent[] {
   const ev: GameEvent[] = [];
-  if (playing(s)) startPlayerTask(s, bal, lane, material, ev);
+  if (!playing(s) || lane !== s.player.screen) return ev;
+  if (s.player.task !== null) s.player.queued = true;
+  else startPlayerTask(s, bal, lane, material, ev);
   return ev;
 }
 
@@ -29,7 +35,10 @@ export function workHold(s: GameState, bal: Balance, lane: Lane, pressed: boolea
     return ev;
   }
   s.player.holding = pressed;
-  if (pressed) startPlayerTask(s, bal, lane, 'auto', ev);
+  if (pressed) {
+    if (s.player.task !== null) s.player.queued = true;
+    else startPlayerTask(s, bal, lane, 'auto', ev);
+  }
   return ev;
 }
 
@@ -38,6 +47,7 @@ export function setScreen(s: GameState, lane: Lane): void {
   if (s.player.screen === lane) return;
   s.player.screen = lane;
   s.player.holding = false;
+  s.player.queued = false;
 }
 
 /** ジャンクを手動で買う。所持金が足りる分だけ買う */
@@ -56,6 +66,33 @@ export function buyJunk(s: GameState, bal: Balance, count: number): GameEvent[] 
 
 export function setAutoBuy(s: GameState, on: boolean): void {
   s.autoBuy = on;
+}
+
+/** 1台分そろえるのに足りない部品を新品で買う。お金が足りなければ何もしない */
+export function buyMissingParts(s: GameState, bal: Balance): GameEvent[] {
+  const ev: GameEvent[] = [];
+  if (!playing(s)) return ev;
+  const types = missingTypes(s.parts);
+  if (types.length === 0) return ev;
+  const cost = missingCost(s, bal);
+  if (s.cash < cost) return ev;
+  spend(s, cost);
+  for (const t of types) s.parts[t] += 1;
+  s.stats.newPartsBought += types.length;
+  s.stats.newPartsSpent += cost;
+  ev.push({ type: 'partsBought', types, cost });
+  return ev;
+}
+
+/** 出品価格の段階を変える。評価が足りない段階は選べない。次の注文までの間隔は新しい値段で引き直す */
+export function setPriceLevel(s: GameState, bal: Balance, level: number): GameEvent[] {
+  const ev: GameEvent[] = [];
+  if (!playing(s) || level === s.priceLevel || !priceLevelUnlocked(s, bal, level)) return ev;
+  s.priceLevel = level;
+  s.stats.priceChanges += 1;
+  s.nextOrderAt = s.t + expovariate(s, orderRate(s, bal));
+  ev.push({ type: 'priceChanged', level });
+  return ev;
 }
 
 export function canHire(s: GameState, bal: Balance): boolean {

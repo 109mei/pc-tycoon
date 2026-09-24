@@ -3,8 +3,16 @@ import { countOf, debug, expectScreen, numberOf, ready, swipe } from './helpers'
 
 interface StateLike {
   tick: number;
+  cash: number;
+  priceLevel: number;
+  parts: Record<string, number>;
   stats: { sold: number; hires: number };
   workers: unknown[];
+}
+
+/** 表示の「¥50,000」などから数を取り出す */
+function yenOf(text: string): number {
+  return Number(text.replace(/[^0-9]/g, ''));
 }
 
 test('開いて3つの画面を切り替えられる（タップとスワイプ）', async ({ page }) => {
@@ -35,30 +43,71 @@ test('作業ボタンで分解・組み立て・発送ができ、所持金が�
   await page.goto('./?seed=1&speed=4');
   await ready(page);
   const work = page.getByTestId('work');
+  // 序盤は押す場所が光る
+  await expect(work).toHaveClass(/hint/);
 
-  // 分解：長押しで部品が4個以上になるまで続ける（ジャンクは自動仕入れで届く）
+  // 分解：長押しで、1台分の部品がそろうまで続ける（ジャンクは自動仕入れで届く）
   await expect.poll(() => countOf(page, 'count-dis')).toBeGreaterThan(0);
   const box = (await work.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await expect.poll(() => countOf(page, 'count-asm'), { timeout: 20_000 }).toBeGreaterThanOrEqual(4);
+  await expect.poll(() => countOf(page, 'count-asm'), { timeout: 45_000 }).toBeGreaterThanOrEqual(1);
   await page.mouse.up();
 
   // 組み立て：タップで1回
   await page.getByTestId('switch-asm').click();
   await expect(work).toContainText('組み立て');
   await work.click();
-  await expect.poll(() => countOf(page, 'count-ship'), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => countOf(page, 'count-ship'), { timeout: 40_000 }).toBeGreaterThanOrEqual(1);
 
   // 発送：注文が来たらタップ
   await page.getByTestId('switch-ship').click();
   await expect
-    .poll(() => page.getByTestId('orders').getAttribute('data-count').then(Number), { timeout: 30_000 })
+    .poll(() => page.getByTestId('orders').getAttribute('data-count').then(Number), { timeout: 45_000 })
     .toBeGreaterThan(0);
   const before = await numberOf(page, 'cash');
   await work.click();
-  await expect.poll(() => numberOf(page, 'cash'), { timeout: 10_000 }).toBeGreaterThan(before);
+  await expect.poll(() => numberOf(page, 'cash'), { timeout: 20_000 }).toBeGreaterThan(before);
   await expect(page.locator('.popup.sale').first()).toBeVisible();
+});
+
+test('押せないときは足りない物が出て、足りない部品は新品で補える', async ({ page }) => {
+  await page.goto('./?seed=9&debug=1&speed=0');
+  await ready(page);
+  await page.getByTestId('switch-asm').click();
+  await debug(page, 'setParts({ board: 2, memory: 1, storage: 0, power: 1 })');
+  await expect(page.getByTestId('work-block')).toBeVisible();
+  await expect(page.getByTestId('missing')).toBeVisible();
+  const before = await numberOf(page, 'cash');
+  const cost = yenOf(await page.getByTestId('buy-missing').innerText());
+  expect(cost).toBeGreaterThan(0);
+  await page.getByTestId('buy-missing').click();
+  await expect.poll(() => countOf(page, 'count-asm')).toBe(1);
+  expect(await numberOf(page, 'cash')).toBe(before - cost);
+  await expect(page.getByTestId('work-block')).toBeHidden();
+});
+
+test('出品価格を変えられる（高い値段は評価が付くまで選べない）', async ({ page }) => {
+  await page.goto('./?seed=10&debug=1&speed=0');
+  await ready(page);
+  await page.getByTestId('switch-ship').click();
+  const price = page.getByTestId('price');
+  const start = Number(await price.getAttribute('data-value'));
+  await expect(page.getByTestId('price-up')).toBeDisabled();
+  await page.getByTestId('price-down').click();
+  await expect.poll(async () => Number(await price.getAttribute('data-value'))).toBeLessThan(start);
+  const interval = await page.getByTestId('order-rate').innerText();
+  await page.getByTestId('price-up').click();
+  await expect.poll(async () => Number(await price.getAttribute('data-value'))).toBe(start);
+  expect(await page.getByTestId('order-rate').innerText()).not.toBe(interval);
+  // 評価が付くと、元の値段より高い段階も選べる
+  await debug(page, 'runBot(150, { hire: true })');
+  await page.getByTestId('switch-ship').click();
+  for (let i = 0; i < 5 && Number(await price.getAttribute('data-value')) > start; i++) {
+    await page.getByTestId('price-down').click();
+  }
+  await expect.poll(async () => Number(await price.getAttribute('data-value'))).toBeLessThanOrEqual(start);
+  await expect(page.getByTestId('price-up')).toBeEnabled();
 });
 
 test('アルバイトを雇える', async ({ page }) => {
@@ -73,14 +122,14 @@ test('アルバイトを雇える', async ({ page }) => {
   await expect(page.getByTestId('forecast')).toContainText('台/分');
   await expect(page.getByTestId('pay-check')).toContainText('支払いOK');
   const before = await numberOf(page, 'cash');
+  const cost = yenOf(await page.getByTestId('hire').innerText());
   await page.getByTestId('hire').click();
 
   await expect(page.getByTestId('sheet-staff')).toBeHidden();
   await expect(page.getByTestId('switch-asm').locator('.worker-mark')).toBeVisible();
   await expect(page.getByTestId('hire-badge')).toBeVisible();
-  expect(await numberOf(page, 'cash')).toBe(before - 60000);
+  expect(await numberOf(page, 'cash')).toBe(before - cost);
   await page.getByTestId('switch-asm').click();
-  await expect(page.getByTestId('work')).toContainText('バイト');
   await expect(page.locator('.name-tag.worker')).toHaveText('バイト');
 });
 
@@ -92,6 +141,7 @@ test('再読み込みしてもセーブが残る', async ({ page }) => {
   await page.getByTestId('hire-lane-dis').click();
   await page.getByTestId('hire').click();
   await page.getByTestId('switch-ship').click();
+  await page.getByTestId('price-down').click();
   const before = await debug<StateLike>(page, 'state()');
   expect(before.stats.hires).toBe(1);
 
@@ -102,6 +152,7 @@ test('再読み込みしてもセーブが残る', async ({ page }) => {
   const after = await debug<StateLike>(page, 'state()');
   expect(after.stats.hires).toBe(1);
   expect(after.workers.length).toBe(1);
+  expect(after.priceLevel).toBe(before.priceLevel);
   expect(after.stats.sold).toBeGreaterThanOrEqual(before.stats.sold);
   expect(after.tick).toBeGreaterThanOrEqual(before.tick);
 });

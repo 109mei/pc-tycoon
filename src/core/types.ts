@@ -1,7 +1,15 @@
-/** 3つの列。dis＝生産（分解）、asm＝制作（組み立て）、ship＝販売（発送） */
+/** 3つの列。dis＝生産（分解・検品）、asm＝制作（組み立て）、ship＝販売（出品・発送） */
 export type Lane = 'dis' | 'asm' | 'ship';
 
 export const LANES: readonly Lane[] = ['dis', 'asm', 'ship'];
+
+/** 部品の種類。再生PCは1種類ずつ使って組む */
+export type PartType = 'board' | 'memory' | 'storage' | 'power';
+
+export const PART_TYPES: readonly PartType[] = ['board', 'memory', 'storage', 'power'];
+
+/** 種類ごとの部品の数 */
+export type Parts = Record<PartType, number>;
 
 /** 作業をしている手。'player'＝自分、数値＝アルバイトの番号 */
 export type Actor = 'player' | number;
@@ -16,6 +24,8 @@ export interface Task {
   kit: boolean;
   /** キットを使うとき、どの下請けのキットか */
   subId: number | null;
+  /** 発送のとき、その注文の値段 */
+  price: number | null;
 }
 
 export interface Worker {
@@ -30,6 +40,8 @@ export interface Worker {
 export interface Order {
   id: number;
   arrivedAt: number;
+  /** 注文したときの出品価格 */
+  price: number;
 }
 
 export interface SubOffer {
@@ -41,7 +53,7 @@ export interface SubOffer {
 export interface Subcontract {
   id: number;
   units: number;
-  /** まだ使っていない支給キット */
+  /** まだ使っていない支給キット（1台分の部品一式） */
   kits: number;
   /** まだ納めていない台数 */
   left: number;
@@ -83,6 +95,12 @@ export interface Stats {
   kitsAssembled: number;
   disassembled: number;
   junkBought: number;
+  /** 検品で見つかった壊れた部品 */
+  brokenParts: number;
+  /** 新品で補った部品の数と、使ったお金 */
+  newPartsBought: number;
+  newPartsSpent: number;
+  priceChanges: number;
   hires: number;
   subsDone: number;
   subsFailed: number;
@@ -119,11 +137,13 @@ export interface GameState {
   status: Status;
   cash: number;
   junk: number;
-  parts: number;
+  parts: Parts;
   pcs: number;
   orders: Order[];
   nextOrderAt: number;
   nextOrderId: number;
+  /** 出品価格の段階（balance.market.priceLevels の番号） */
+  priceLevel: number;
   nextPayAt: number;
   /** 猶予の終わり（秒）。猶予中でなければ null */
   graceUntil: number | null;
@@ -137,6 +157,8 @@ export interface GameState {
     /** 今いる画面＝自分の手がある列 */
     screen: Lane;
     holding: boolean;
+    /** 作業中に押したタップ（手が空いたら1回だけ始める） */
+    queued: boolean;
     task: Task | null;
   };
   workers: Worker[];
@@ -150,6 +172,8 @@ export interface GameState {
     asm: [number, number][];
     /** 売れた時刻 */
     sold: number[];
+    /** 注文を逃した時刻 */
+    lost: number[];
   };
   finance: {
     current: Period;
@@ -172,10 +196,12 @@ export type GameEvent =
   | { type: 'graceCleared' }
   | { type: 'bankrupt' }
   | { type: 'bought'; count: number; auto: boolean }
+  | { type: 'partsBought'; types: PartType[]; cost: number }
+  | { type: 'priceChanged'; level: number }
   | { type: 'taskStarted'; lane: Lane; by: Actor }
-  | { type: 'disassembled'; parts: number; by: Actor }
+  | { type: 'disassembled'; good: PartType[]; broken: PartType[]; by: Actor }
   | { type: 'assembled'; kit: boolean; by: Actor }
-  | { type: 'sold'; amount: number; by: Actor }
+  | { type: 'sold'; amount: number; price: number; by: Actor }
   | { type: 'subFee'; amount: number; by: Actor }
   | { type: 'hired'; lane: Lane; id: number }
   | { type: 'hireMeasured' }

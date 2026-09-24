@@ -1,41 +1,269 @@
 import type { Graphics } from 'pixi.js';
 import type { GameState, Lane } from '../core/types';
-import type { Balance } from '../data/schema';
-import { IsoPainter, shade, type BoxColors } from './iso';
-import { ROOM_LAYOUT, type RoomLayout } from './layout';
+import { PART_TYPES } from '../core/types';
+import { setsOf } from '../core/state';
+import { faceShade, floorFade, Iso, shade, softShadow, sunFade, visualRandom } from './gfx';
+import { project } from './isoMath';
+import { ASSEMBLY, PRODUCTION, ROOM_LAYOUT, SALES, type RoomLayout } from './layout';
 import type { RoomPalette } from './palette';
-import { drawShell, drawWindow, type FloorKind } from './shell';
+import {
+  bench,
+  bin,
+  cart,
+  chair,
+  deskLamp,
+  ewasteBin,
+  junkPc,
+  keyboard,
+  kitBox,
+  monitor,
+  openBox,
+  orderBoard,
+  packedBox,
+  packingTable,
+  pcTower,
+  plant,
+  rack,
+  road,
+  table,
+} from './props';
 
 /**
- * 3つの部屋。shell は変わらない部分（台・床・壁・窓）、scene は数で変わる物と家具。
+ * 3つの部屋。shell は変わらない部分（台・床・壁・窓・壁の飾り）、scene は数で変わる物と家具。
  * 物は実際の数だけ描き、多くなったら積み上げる。
  */
 
+type FloorKind = 'concrete' | 'wood' | 'tile';
 const FLOOR: Record<Lane, FloorKind> = { dis: 'concrete', asm: 'wood', ship: 'tile' };
+
+// ---------------------------------------------------------------- 部屋の土台
+
+function drawSlabAndFloor(p: Iso, L: RoomLayout, pal: RoomPalette, kind: FloorKind): void {
+  const { w, d, wallT: T, slab: S } = L;
+  const g = p.g;
+  // 台の下の柔らかい影
+  const left = project(L.frame, 0, d, 0);
+  const right = project(L.frame, w, 0, 0);
+  const front = project(L.frame, w, d, 0);
+  const rx = ((right.x - left.x) / 2) * 0.92;
+  g.ellipse((left.x + right.x) / 2, front.y + 26, rx, 30).fill({ fill: softShadow() });
+
+  const base = kind === 'concrete' ? pal.concrete : kind === 'wood' ? pal.wood : pal.tile;
+  p.box(-T, -T, -S, w + T, d + T, S, { top: base, left: pal.slabLeft, right: pal.slabRight }, false);
+  const rnd = visualRandom(kind === 'concrete' ? 11 : kind === 'wood' ? 23 : 37);
+  if (kind === 'concrete') {
+    // まだら模様と目地
+    for (let i = 0; i < 26; i++) {
+      const cx = 0.4 + rnd() * (w - 0.8);
+      const cy = 0.4 + rnd() * (d - 0.8);
+      const r = 0.3 + rnd() * 0.9;
+      const c = project(L.frame, cx, cy, 0);
+      g.ellipse(c.x, c.y, r * L.frame.u * 0.9, r * L.frame.u * 0.45).fill({
+        color: pal.concreteSpot,
+        alpha: 0.35 + rnd() * 0.25,
+      });
+    }
+    for (const t of [w / 3, (2 * w) / 3]) p.flatRect(t - 0.015, 0, t + 0.015, d, 0, shade(pal.concrete, -0.1), 0.8);
+    p.flatRect(0, d / 2 - 0.015, w, d / 2 + 0.015, 0, shade(pal.concrete, -0.1), 0.8);
+  } else if (kind === 'wood') {
+    // 板：列ごとに少し色を変え、継ぎ目をずらす
+    const step = 0.9;
+    let row = 0;
+    for (let y = 0; y < d - 0.001; y += step, row++) {
+      const y1 = Math.min(d, y + step);
+      if (row % 2 === 1) p.flatRect(0, y, w, y1, 0, pal.woodAlt);
+      p.flatRect(0, y1 - 0.025, w, y1, 0, pal.woodSeam, 0.7);
+      let x = -((row * 1.7) % 3.1);
+      while (x < w) {
+        const len = 2.4 + ((row * 7 + Math.round(x * 3)) % 5) * 0.35;
+        const xe = x + len;
+        if (xe > 0 && xe < w) p.flatRect(xe - 0.02, y, xe + 0.02, y1, 0, pal.woodSeam, 0.8);
+        x = xe;
+      }
+      // 木目
+      for (let k = 0; k < 2; k++) {
+        const gy = y + 0.25 + k * 0.35 + rnd() * 0.1;
+        if (gy < y1 - 0.05) p.flatRect(rnd() * 3, gy, w - rnd() * 3, gy + 0.012, 0, shade(pal.wood, -0.08), 0.5);
+      }
+    }
+  } else {
+    // タイル：1枚ずつ少し色を変え、目地を入れる
+    const n = 6;
+    const sx = w / n;
+    const sy = d / n;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        if ((i + j) % 2 === 1 || rnd() < 0.25) {
+          p.flatRect(i * sx, j * sy, (i + 1) * sx, (j + 1) * sy, 0, rnd() < 0.5 ? pal.tileAlt : shade(pal.tile, -0.02));
+        }
+      }
+    }
+    for (let i = 1; i < n; i++) {
+      p.flatRect(i * sx - 0.025, 0, i * sx + 0.025, d, 0, pal.tileGrout);
+      p.flatRect(0, i * sy - 0.025, w, i * sy + 0.025, 0, pal.tileGrout);
+    }
+  }
+  // 台の側面の明暗
+  p.faceFill(
+    [
+      [-T, d, -S],
+      [w, d, -S],
+      [w, d, 0],
+      [-T, d, 0],
+    ],
+    faceShade(),
+  );
+  p.faceFill(
+    [
+      [w, -T, -S],
+      [w, d, -S],
+      [w, d, 0],
+      [w, -T, 0],
+    ],
+    faceShade(),
+  );
+  // 壁ぎわの陰（床に落ちる）
+  p.faceFill(
+    [
+      [0, 0, 0],
+      [w, 0, 0],
+      [w, 0.9, 0],
+      [0.9, 0.9, 0],
+    ],
+    floorFade(),
+    0.9,
+  );
+  p.faceFill(
+    [
+      [0, 0, 0],
+      [0.9, 0.9, 0],
+      [0.9, d, 0],
+      [0, d, 0],
+    ],
+    floorFade(),
+    0.9,
+  );
+}
+
+function drawWalls(p: Iso, L: RoomLayout, pal: RoomPalette): void {
+  const { w, d, wallH: H, wallT: T } = L;
+  // 右の壁（奥の角を含む）と左の壁
+  p.box(-T, -T, 0, w + T, T, H, { top: pal.wallTop, left: pal.wallRight, right: pal.wallEnd }, false);
+  p.faceFill(
+    [
+      [-T, 0, 0],
+      [w, 0, 0],
+      [w, 0, H],
+      [-T, 0, H],
+    ],
+    faceShade(),
+  );
+  p.box(-T, 0, 0, T, d, H, { top: pal.wallTop, left: pal.wallEnd, right: pal.wallLeft }, false);
+  p.faceFill(
+    [
+      [0, 0, 0],
+      [0, d, 0],
+      [0, d, H],
+      [0, 0, H],
+    ],
+    faceShade(),
+  );
+  // 幅木
+  p.planeY(0.004, 0, w, 0, 0.14, pal.baseboard);
+  p.planeX(0.004, 0, d, 0, 0.14, shade(pal.baseboard, -0.06));
+}
+
+/** 窓（左の壁は x=0、右の壁は y=0 の面）と、床に落ちる光 */
+function drawWindow(
+  p: Iso,
+  pal: RoomPalette,
+  limit: number,
+  wall: 'left' | 'right',
+  a0: number,
+  a1: number,
+  z0: number,
+  z1: number,
+): void {
+  const f = 0.1;
+  const mid = (a0 + a1) / 2;
+  const put = (b0: number, b1: number, c0: number, c1: number, color: number, alpha = 1) => {
+    if (wall === 'left') p.planeX(0.01, b0, b1, c0, c1, color, alpha);
+    else p.planeY(0.01, b0, b1, c0, c1, color, alpha);
+  };
+  // 床に落ちる光（窓の形を斜めに伸ばす）
+  // 床の外にはみ出さないよう、奥へ伸びる分を部屋の中に収める
+  const lim = (v: number) => Math.min(v, limit - 0.08);
+  const pool: [number, number, number][] =
+    wall === 'right'
+      ? [
+          [lim(a0 + 0.3), 0.2, 0],
+          [lim(a1 + 0.3), 0.2, 0],
+          [lim(a1 + 1.5), 2.9, 0],
+          [lim(a0 + 1.5), 2.9, 0],
+        ]
+      : [
+          [0.2, lim(a0 + 0.3), 0],
+          [0.2, lim(a1 + 0.3), 0],
+          [2.9, lim(a1 + 1.5), 0],
+          [2.9, lim(a0 + 1.5), 0],
+        ];
+  p.face(pool, pal.sunlight, pal.sunlightAlpha * 0.35);
+  p.faceFill(pool, sunFade(), pal.sunlightAlpha);
+  if (pal.night) put(a0 - 0.35, a1 + 0.35, z0 - 0.3, z1 + 0.3, pal.glass, 0.14);
+  put(a0 - 0.06, a1 + 0.06, z0 - 0.08, z0, shade(pal.windowFrame, -0.12));
+  put(a0, a1, z0, z1, pal.windowFrame);
+  put(a0 + f, mid - f / 2, z0 + f, z1 - f, pal.glass);
+  put(mid + f / 2, a1 - f, z0 + f, z1 - f, pal.glass);
+  // ガラスの反射
+  if (!pal.night) {
+    put(a0 + f + 0.1, a0 + f + 0.3, z0 + 0.35, z1 - f - 0.1, pal.glassShine, 0.8);
+    put(mid + f / 2 + 0.1, mid + f / 2 + 0.25, z0 + 0.3, z1 - f - 0.15, pal.glassShine, 0.8);
+  }
+}
 
 export function drawRoomShell(g: Graphics, lane: Lane, pal: RoomPalette): void {
   const L = ROOM_LAYOUT[lane];
-  const p = drawShell(g, L, pal, FLOOR[lane]);
+  const p = new Iso(g, L.frame);
+  drawSlabAndFloor(p, L, pal, FLOOR[lane]);
+  drawWalls(p, L, pal);
   if (lane === 'dis') {
-    drawWindow(p, pal, 'right', 7.0, 9.3, 1.0, 2.05);
+    drawWindow(p, pal, L.w, 'right', 7.0, 9.3, 1.05, 2.1);
+    // 左の壁の有孔ボードと工具
+    p.planeX(0.01, 1.7, 4.2, 1.0, 2.2, shade(pal.cork, 0.2));
+    for (let i = 0; i < 5; i++) {
+      const yy = 1.95 + i * 0.45;
+      p.planeX(0.02, yy, yy + 0.07, 1.3 + (i % 2) * 0.1, 1.95, pal.metalDark.right);
+      p.planeX(0.02, yy - 0.04, yy + 0.11, 1.18 + (i % 2) * 0.1, 1.32 + (i % 2) * 0.1, i % 2 === 0 ? 0xe0574a : 0x3552c4);
+    }
+    // 天井の明かり（夜）
+    if (pal.night) p.lightPool(5, 5, 4.2, pal.lamp, 0.16);
   } else if (lane === 'asm') {
-    drawWindow(p, pal, 'left', 2.0, 4.9, 1.0, 2.1);
-    // 壁のポスター
-    p.wallY(0.01, 8.3, 9.5, 1.15, 2.3, pal.posterFrame);
-    p.wallY(0.02, 8.42, 9.38, 1.27, 2.18, pal.posterInner);
-    p.wallY(0.03, 8.6, 9.2, 1.45, 1.75, shade(pal.posterFrame, 0.25));
+    drawWindow(p, pal, L.d, 'left', 2.0, 4.9, 1.05, 2.15);
+    // ポスターと付せんのボード
+    p.planeY(0.01, 8.35, 9.55, 1.15, 2.3, pal.poster);
+    p.planeY(0.02, 8.47, 9.43, 1.27, 2.18, pal.posterInner);
+    p.planeY(0.03, 8.62, 9.25, 1.45, 1.78, shade(pal.poster, 0.25));
+    p.planeY(0.01, 1.2, 3.1, 1.25, 2.2, pal.night ? 0xc9d0dc : 0xffffff);
+    const notes = [0xf6d365, 0x9be3b8, 0xf6a4a4, 0x8fb8ff];
+    notes.forEach((c, i) =>
+      p.planeY(0.02, 1.35 + (i % 2) * 0.85, 1.95 + (i % 2) * 0.85, 1.4 + Math.floor(i / 2) * 0.4, 1.72 + Math.floor(i / 2) * 0.4, c),
+    );
   } else {
-    // 玄関のドア
-    const dx0 = 6.9;
-    const dx1 = 8.2;
-    if (pal.doorGlow) p.wallY(0.01, dx0 - 0.4, dx1 + 0.4, 0, 2.55, pal.door, 0.14);
-    p.wallY(0.01, dx0, dx1, 0, 2.2, pal.windowFrame);
-    p.wallY(0.02, dx0 + 0.1, dx1 - 0.1, 0, 2.1, pal.door);
-    p.wallY(0.03, dx1 - 0.35, dx1 - 0.22, 0.95, 1.05, shade(pal.door, -0.35));
-    // 掲示板（注文票は scene で貼る）
-    p.wallY(0.01, 0.8, 3.9, 1.35, 2.4, pal.cork);
+    // 玄関のドア・掲示板・左の壁の棚（たたんだ段ボール）
+    const { x0, x1 } = SALES.door;
+    if (pal.night) p.planeY(0.01, x0 - 0.4, x1 + 0.4, 0, 2.55, pal.door, 0.14);
+    p.planeY(0.01, x0 - 0.08, x1 + 0.08, 0, 2.28, pal.doorFrame);
+    p.planeY(0.02, x0 + 0.02, x1 - 0.02, 0, 2.18, pal.door);
+    p.planeY(0.03, x0 + 0.2, x1 - 0.2, 1.35, 1.95, shade(pal.door, pal.night ? 0.2 : -0.06));
+    p.planeY(0.03, x1 - 0.35, x1 - 0.22, 0.95, 1.07, shade(pal.door, -0.4));
+    p.flatRect(x0 - 0.1, 0.05, x1 + 0.1, 0.9, 0.002, shade(pal.tile, -0.2));
+    p.planeY(0.01, 0.8, 3.95, 1.35, 2.42, pal.cork);
+    p.box(0.02, 4.4, 1.55, 0.5, 2.6, 0.06, pal.shelf);
+    for (let i = 0; i < 4; i++) p.box(0.06, 4.55 + i * 0.6, 1.61, 0.4, 0.5, 0.05 + (i % 2) * 0.04, pal.cardboard, false);
   }
 }
+
+// ---------------------------------------------------------------- 数で変わる物
 
 export interface SceneInfo {
   /** 描き直しが要るかを見分ける鍵 */
@@ -43,329 +271,125 @@ export interface SceneInfo {
   draw(g: Graphics, pal: RoomPalette): void;
 }
 
-/** 積み上げる置き場所。列 × 奥行き × 段 */
-function stackSlots(
-  x0: number,
-  y0: number,
-  cols: number,
-  rows: number,
-  layers: number,
-  sx: number,
-  sy: number,
-  sz: number,
-): [number, number, number][] {
-  const out: [number, number, number][] = [];
-  for (let k = 0; k < layers; k++) {
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) out.push([x0 + i * sx, y0 + j * sy, k * sz]);
-    }
-  }
-  return out;
+export interface SceneExtra {
+  /** 廃棄箱に入れて見せる壊れた部品の数 */
+  broken: number;
+  /** 集荷を待つ梱包済みの箱の数 */
+  boxesWaiting: number;
+  /** 組み立て中のOSを入れる進み具合（モニターのバー） */
+  installing: number;
 }
 
-/** 奥から手前の順（奥の物を先に描く）に並べる */
-function byDepth<T extends { x: number; y: number; z: number }>(items: T[]): T[] {
-  return items.sort((a, b) => a.x + a.y - (b.x + b.y) || a.z - b.z);
-}
-
-function openBox(p: IsoPainter, x: number, y: number, z: number, w: number, d: number, h: number, pal: RoomPalette) {
-  p.box(x, y, z, w, d, h, { ...pal.cardboard, top: pal.cardboardInner });
-  const r = 0.08;
-  p.flatRect(x, y + d - r, x + w, y + d, z + h, pal.cardboard.top);
-  p.flatRect(x + w - r, y, x + w, y + d, z + h, pal.cardboard.top);
-  p.wallX(x + r, y + r, y + d - r, z + h - 0.25, z + h, shade(pal.cardboardInner, 0.12));
-}
-
-function junkPc(p: IsoPainter, x: number, y: number, z: number, pal: RoomPalette) {
-  const w = 1.12;
-  const d = 0.88;
-  const h = 0.62;
-  p.box(x, y, z, w, d, h, pal.junk);
-  p.wallX(x + w + 0.005, y + 0.12, y + 0.42, z + 0.3, z + 0.42, pal.junkSlot);
-  p.wallX(x + w + 0.005, y + 0.12, y + 0.42, z + 0.12, z + 0.2, pal.junkSlot);
-}
-
-function partBox(p: IsoPainter, x: number, y: number, z: number, color: number) {
-  p.box(x, y, z, 0.78, 0.52, 0.3, { top: shade(color, 0.16), left: shade(color, -0.16), right: color });
-}
-
-function pcTower(p: IsoPainter, x: number, y: number, z: number, pal: RoomPalette, glow: boolean) {
-  const w = 0.62;
-  const d = 0.95;
-  const h = 1.15;
-  p.box(x, y, z, w, d, h, pal.pc);
-  p.wallX(x + w + 0.005, y + 0.3, y + 0.42, z + h - 0.28, z + h - 0.16, pal.led, glow ? 1 : 0.9);
-  p.wallX(x + w + 0.005, y + 0.1, y + d - 0.1, z + h - 0.5, z + h - 0.46, shade(pal.pc.right, 0.25));
-}
-
-function packedBox(p: IsoPainter, x: number, y: number, z: number, pal: RoomPalette) {
-  const s = 0.82;
-  const h = 0.62;
-  p.box(x, y, z, s, s, h, pal.cardboard);
-  p.flatRect(x + s / 2 - 0.09, y, x + s / 2 + 0.09, y + s, z + h + 0.001, pal.tape);
-  p.face(
-    [
-      [x + s / 2 - 0.09, y + s, z + h],
-      [x + s / 2 + 0.09, y + s, z + h],
-      [x + s / 2 + 0.09, y + s, z + h - 0.25],
-      [x + s / 2 - 0.09, y + s, z + h - 0.25],
-    ],
-    pal.tape,
-  );
-}
-
-function kitBox(p: IsoPainter, x: number, y: number, z: number, c: BoxColors) {
-  p.box(x, y, z, 0.86, 0.66, 0.36, c);
-  p.flatRect(x + 0.1, y + 0.26, x + 0.76, y + 0.4, z + 0.361, shade(c.top, 0.3));
-}
-
-function desk(p: IsoPainter, x: number, y: number, w: number, d: number, top: number, pal: RoomPalette) {
-  const leg = 0.14;
-  const c = pal.furniture;
-  const legC: BoxColors = { top: c.left, left: shade(c.left, -0.1), right: c.left };
-  p.box(x + 0.08, y + 0.08, 0, leg, leg, top - 0.14, legC);
-  p.box(x + w - 0.08 - leg, y + 0.08, 0, leg, leg, top - 0.14, legC);
-  p.box(x + 0.08, y + d - 0.08 - leg, 0, leg, leg, top - 0.14, legC);
-  p.box(x + w - 0.08 - leg, y + d - 0.08 - leg, 0, leg, leg, top - 0.14, legC);
-  p.box(x, y, top - 0.14, w, d, 0.14, c);
-}
-
-// ---------------------------------------------------------------- 生産：物置
-
-function productionScene(s: GameState, L: RoomLayout): SceneInfo {
-  const junk = s.junk;
+/** 生産：ジャンクの棚・作業台・仕分け箱（余っている部品）・廃棄箱 */
+function productionScene(s: GameState, L: RoomLayout, broken: number): SceneInfo {
+  const sets = setsOf(s.parts);
+  const spare = PART_TYPES.map((t) => s.parts[t] - sets);
+  const shownBroken = Math.min(broken, 10);
   return {
-    key: `dis|${junk}`,
+    key: `dis|${s.junk}|${spare.join(',')}|${shownBroken}`,
     draw(g, pal) {
-      const p = new IsoPainter(g, L.frame);
-      // 金属ラック（右の壁ぞい）。棚3段に3台ずつ、あふれた分は手前の床に積む
-      const rx0 = 0.7;
-      const rx1 = 4.6;
-      const ry0 = 0.3;
-      const ry1 = 1.45;
-      const post = 0.1;
-      const shelvesZ = [0.25, 1.05, 1.85];
-      p.box(rx0, ry0, 0, post, post, 2.4, pal.metalPost);
-      p.box(rx1 - post, ry0, 0, post, post, 2.4, pal.metalPost);
-      const onRack = Math.min(junk, 9);
-      for (let k = 0; k < shelvesZ.length; k++) {
-        const z = shelvesZ[k]!;
-        p.box(rx0, ry0, z, rx1 - rx0, ry1 - ry0, 0.07, pal.shelf);
-        // 作業台に近い右の端から並べる
-        for (let i = 2; i >= 0; i--) {
-          const n = k * 3 + (2 - i);
-          if (n < onRack) junkPc(p, rx0 + 0.2 + i * 1.25, ry0 + 0.16, z + 0.07, pal);
-        }
-      }
-      p.box(rx0, ry1 - post, 0, post, post, 2.4, pal.metalPost);
-      p.box(rx1 - post, ry1 - post, 0, post, post, 2.4, pal.metalPost);
-
-      // 仕分け箱（右の壁ぞい）
-      const bins = [pal.parts[2]!, pal.parts[0]!, pal.parts[5]!];
-      bins.forEach((color, i) => {
-        const x = 5.0 + i * 1.12;
-        p.box(x, 0.35, 0, 1.0, 0.9, 0.55, pal.bin);
-        p.flatRect(x + 0.12, 0.47, x + 0.88, 1.13, 0.47, color);
+      const p = new Iso(g, L.frame);
+      rack(p, pal, PRODUCTION.rack, s.junk);
+      PART_TYPES.forEach((t, i) => {
+        const [x, y] = PRODUCTION.bins[t];
+        bin(p, pal, t, x, y, PRODUCTION.binSize, spare[i]!);
       });
-
-      const extra: { x: number; y: number; z: number }[] = [];
-      const floorSlots = stackSlots(0.5, 2.0, 2, 2, 4, 1.2, 1.0, 0.56);
-      for (let n = 0; n < junk - onRack && n < floorSlots.length; n++) {
-        const [x, y, z] = floorSlots[n]!;
-        extra.push({ x, y, z });
+      // 棚にのらないジャンクは床に積む
+      const extra = Math.max(0, s.junk - 9);
+      for (let n = 0; n < Math.min(extra, 12); n++) {
+        const layer = Math.floor(n / 4);
+        const i = n % 4;
+        const x = 0.5 + (i % 2) * 1.25;
+        const y = 2.0 + Math.floor(i / 2) * 0.95;
+        if (layer === 0) p.shadow(x, y, 1.15, 0.82, 0, 0.1);
+        junkPc(p, pal, x, y, layer * 0.56, n);
       }
-      for (const it of byDepth(extra)) junkPc(p, it.x, it.y, it.z, pal);
-
-      // 作業台と開けたジャンクPC
-      desk(p, 3.8, 3.0, 3.1, 1.55, 0.95, pal);
-      p.flatRect(3.95, 3.12, 6.75, 4.42, 0.951, pal.mat);
-      p.box(4.2, 3.3, 0.95, 1.55, 0.95, 0.38, pal.junk);
-      p.flatRect(4.32, 3.42, 5.63, 4.13, 1.331, pal.board);
-      p.box(4.5, 3.55, 1.33, 0.4, 0.3, 0.06, { top: 0xe3b23c, left: 0xb58a22, right: 0xd1a12e });
-      p.box(6.0, 3.35, 0.95, 0.5, 0.36, 0.08, { top: 0x6f95e3, left: 0x3a5fb0, right: 0x4b78d6 });
-      p.box(5.95, 3.85, 0.95, 0.42, 0.32, 0.07, { top: 0xf0c75a, left: 0xb58a22, right: 0xe3b23c });
-
-      // 届いた段ボール
-      openBox(p, 4.8, 7.4, 0, 1.15, 1.1, 0.66, pal);
+      ewasteBin(p, pal, PRODUCTION.ewaste, shownBroken);
+      bench(p, pal, PRODUCTION.bench);
+      openBox(p, pal, 4.9, 7.5, 0, 1.15, 1.1, 0.66);
     },
   };
 }
 
-// ---------------------------------------------------------------- 制作：作業部屋
-
-/** 部品の山の置き場所。真ん中に積み、多いときは周りにこぼれる */
-const PILE: [number, number, number][] = (() => {
-  const out: [number, number, number][] = [];
-  const cx = 5.7;
-  const cy = 6.1;
-  const core: [number, number][] = [
-    [0, 0], [0.82, 0], [0, 0.56], [0.82, 0.56], [-0.82, 0], [-0.82, 0.56], [0, -0.56], [0.82, -0.56], [-0.82, -0.56],
-  ];
-  const layers: [number, number][][] = [core, core.slice(0, 6), core.slice(0, 4), core.slice(0, 2)];
-  layers.forEach((pos, k) => {
-    for (const [dx, dy] of pos) out.push([cx + dx + k * 0.18, cy + dy + k * 0.12, k * 0.3]);
-  });
-  // こぼれた部品（床に広がる）
-  const ring: [number, number][] = [
-    [1.9, 0.9], [-1.7, 1.2], [1.8, -1.1], [0.2, 1.6], [-2.2, -0.2], [2.5, 0.1], [-0.9, 1.9], [1.2, 1.9],
-    [-2.4, 0.9], [2.6, -0.8], [0.9, -1.5], [-1.2, -1.4], [3.0, 1.0], [-3.0, 0.4], [1.9, 2.3], [-2.0, 2.2],
-  ];
-  for (let k = 0; k < 3; k++) {
-    for (const [dx, dy] of ring) out.push([cx + dx + k * 0.1, cy + dy + k * 0.08, k * 0.3]);
-  }
-  return out;
-})();
-
-function assemblyScene(s: GameState, L: RoomLayout): SceneInfo {
-  const parts = s.parts;
+/** 制作：机（開けたPCケース・モニター・キーボード・ライト）・いす・ワゴン（そろった部品）・キット・観葉植物 */
+function assemblyScene(s: GameState, L: RoomLayout, installing: number): SceneInfo {
+  const sets = setsOf(s.parts);
   const kits = s.sub !== null ? s.sub.kits : 0;
   return {
-    key: `asm|${parts}|${kits}`,
+    key: `asm|${sets}|${kits}|${Math.round(installing * 20)}`,
     draw(g, pal) {
-      const p = new IsoPainter(g, L.frame);
-      if (pal.lightPoolAlpha > 0) {
-        p.flatRect(3.3, 0.2, 9.0, 3.4, 0.001, pal.lightPool, pal.lightPoolAlpha);
-      }
-      // 作業机（右の壁ぞい）
-      desk(p, 3.6, 0.3, 4.9, 2.0, 1.0, pal);
-      // 中の基板が見える開けたPCケース
-      p.box(3.85, 0.5, 1.0, 1.25, 1.2, 1.5, pal.pc);
-      p.wallY(1.7 + 0.005, 3.98, 4.97, 1.14, 2.36, pal.board);
-      p.wallY(1.7 + 0.01, 4.1, 4.5, 1.9, 2.2, 0xe3b23c);
-      p.wallY(1.7 + 0.01, 4.55, 4.85, 1.3, 1.55, 0x4b78d6);
-      p.wallY(1.7 + 0.01, 4.1, 4.4, 1.3, 1.6, 0xeef1f5);
-      // モニター
-      p.box(6.75, 0.85, 1.0, 0.36, 0.3, 0.3, pal.bezel);
-      p.box(6.05, 0.62, 1.28, 1.75, 0.14, 1.05, pal.bezel);
-      if (pal.screenGlow) p.wallY(0.9, 5.8, 8.05, 1.1, 2.55, pal.screen, 0.14);
-      p.wallY(0.76 + 0.005, 6.13, 7.72, 1.36, 2.25, pal.screen);
-      // キーボードと小物
-      p.flatRect(6.1, 1.55, 7.6, 2.12, 1.001, pal.mat);
-      p.box(6.3, 1.65, 1.0, 0.45, 0.3, 0.06, { top: 0xf0c75a, left: 0xb58a22, right: 0xe3b23c });
-      p.box(6.9, 1.75, 1.0, 0.5, 0.26, 0.06, { top: 0x6f95e3, left: 0x3a5fb0, right: 0x4b78d6 });
-      // いす
-      p.box(5.55, 3.35, 0, 0.12, 0.12, 0.5, pal.chair);
-      p.box(5.1, 2.95, 0.5, 0.95, 0.9, 0.13, pal.chair);
-      p.box(5.1, 3.75, 0.63, 0.95, 0.12, 0.8, pal.chair);
-
+      const p = new Iso(g, L.frame);
+      const dsk = ASSEMBLY.desk;
+      p.shadow(dsk.x, dsk.y, dsk.w, dsk.d, 0, 0.4);
+      table(p, pal, dsk.x, dsk.y, dsk.w, dsk.d, dsk.top);
+      // 開けたPCケース：中の基板が見える
+      const [cx, cy] = ASSEMBLY.caseAt;
+      p.shadow(cx, cy, 1.25, 1.2, dsk.top, 0.08);
+      p.box(cx, cy, dsk.top, 1.25, 1.2, 1.5, pal.pc);
+      const fy = cy + 1.2 + 0.004;
+      p.planeY(fy, cx + 0.12, cx + 1.12, dsk.top + 0.14, dsk.top + 1.36, pal.part.board.right);
+      p.planeY(fy + 0.001, cx + 0.24, cx + 0.62, dsk.top + 0.9, dsk.top + 1.24, pal.metal.right);
+      p.planeY(fy + 0.001, cx + 0.72, cx + 0.8, dsk.top + 0.5, dsk.top + 1.24, pal.part.memory.right);
+      p.planeY(fy + 0.001, cx + 0.86, cx + 0.94, dsk.top + 0.5, dsk.top + 1.24, pal.part.memory.right);
+      p.planeY(fy + 0.001, cx + 0.2, cx + 1.02, dsk.top + 0.2, dsk.top + 0.4, pal.part.power.left);
+      const [mx, my] = ASSEMBLY.monitorAt;
+      monitor(p, pal, mx, my, dsk.top, installing);
+      keyboard(p, pal, mx + 0.1, my + 0.95, dsk.top);
+      deskLamp(p, pal, dsk.x + dsk.w - 0.55, dsk.y + 0.25, dsk.top);
+      chair(p, pal, 5.1, 2.95);
+      plant(p, pal, 9.05, 2.7);
       // 支給キット（下請け）
-      const kitSlots = stackSlots(7.7, 2.75, 1, 2, 3, 1, 0.75, 0.37);
-      for (let i = 0; i < kits && i < kitSlots.length; i++) {
-        const [x, y, z] = kitSlots[i]!;
-        kitBox(p, x, y, z, pal.kit);
+      const [kx, ky] = ASSEMBLY.kitAt;
+      for (let i = 0; i < Math.min(kits, 6); i++) {
+        kitBox(p, pal, kx + (i % 2) * 0.05, ky + Math.floor(i / 3) * 0.75, (i % 3) * 0.37);
       }
-
-      // 床の部品の山
-      const items: { x: number; y: number; z: number; color: number }[] = [];
-      for (let i = 0; i < parts; i++) {
-        const slot = PILE[i % PILE.length]!;
-        const lift = Math.floor(i / PILE.length) * 0.9;
-        items.push({ x: slot[0], y: slot[1], z: slot[2] + lift, color: pal.parts[(i * 7 + 3) % pal.parts.length]! });
-      }
-      for (const it of byDepth(items)) partBox(p, it.x, it.y, it.z, it.color);
+      cart(p, pal, ASSEMBLY.cart, sets);
     },
   };
 }
 
-// ---------------------------------------------------------------- 販売：玄関の梱包場所
-
-function salesScene(s: GameState, L: RoomLayout, bal: Balance): SceneInfo {
+/** 販売：注文票・梱包台・完成品・梱包済みの箱（梱包中と集荷待ち）・外の道路 */
+function salesScene(s: GameState, L: RoomLayout, boxesWaiting: number): SceneInfo {
   const orders = s.orders.length;
   const pcs = s.pcs;
   let shipping = s.player.task?.lane === 'ship' ? 1 : 0;
   for (const w of s.workers) if (w.task?.lane === 'ship') shipping += 1;
-  let waiting = 0;
-  for (const t of s.recent.sold) if (t > s.t - bal.display.shippedBoxSeconds) waiting += 1;
-  const boxes = shipping + waiting;
+  const boxes = shipping + boxesWaiting;
   return {
     key: `ship|${orders}|${pcs}|${boxes}`,
     draw(g, pal) {
-      const p = new IsoPainter(g, L.frame);
-      // 注文票（待っている注文の数だけ）
-      for (let i = 0; i < orders; i++) {
-        const col = i % 4;
-        const row = Math.floor(i / 4) % 2;
-        const layer = Math.floor(i / 8);
-        const x = 1.0 + col * 0.72 + layer * 0.18;
-        const z = 2.05 - row * 0.5 - layer * 0.08;
-        p.wallY(0.02, x, x + 0.56, z - 0.32, z, pal.slip);
-        p.wallY(0.03, x + 0.24, x + 0.32, z - 0.06, z + 0.02, pal.pin);
-        p.wallY(0.03, x + 0.1, x + 0.46, z - 0.2, z - 0.16, shade(pal.slip, -0.25));
-      }
-      // 梱包台：開いた段ボール・ラベルプリンター・スマホ
-      desk(p, 0.8, 0.3, 3.6, 1.55, 0.95, pal);
-      p.box(1.4, 0.55, 0.95, 0.62, 0.55, 0.3, pal.printer);
-      p.flatRect(1.52, 0.66, 1.9, 0.98, 1.251, shade(pal.printer.top, -0.2));
-      openBox(p, 2.55, 0.45, 0.95, 1.2, 1.05, 0.55, pal);
-      p.flatRect(1.0, 1.25, 1.55, 1.7, 0.951, pal.phone);
-      p.flatRect(1.06, 1.3, 1.49, 1.65, 0.952, pal.phoneScreen);
-
+      const p = new Iso(g, L.frame);
+      orderBoard(p, pal, orders);
+      packingTable(p, pal, SALES.table);
       const items: { x: number; y: number; z: number; kind: 'pc' | 'box' }[] = [];
-      // 発送待ちの完成品
-      const pcSlots = stackSlots(4.7, 1.0, 3, 3, 1, 0.8, 1.15, 0);
       for (let i = 0; i < pcs; i++) {
-        const slot = pcSlots[i % pcSlots.length]!;
-        const lift = Math.floor(i / pcSlots.length) * 1.15;
-        items.push({ x: slot[0], y: slot[1], z: slot[2] + lift, kind: 'pc' });
+        const slot = i % 9;
+        const lift = Math.floor(i / 9) * 1.15;
+        items.push({ x: SALES.pcs.x + (slot % 3) * 0.78, y: SALES.pcs.y + Math.floor(slot / 3) * 1.12, z: lift, kind: 'pc' });
       }
-      // 梱包済みの箱（梱包中と、集荷を待つ箱）
-      const boxSlots = stackSlots(6.6, 2.4, 2, 2, 3, 0.9, 0.9, 0.62);
-      for (let i = 0; i < boxes && i < boxSlots.length; i++) {
-        const [x, y, z] = boxSlots[i]!;
-        items.push({ x, y, z, kind: 'box' });
+      for (let i = 0; i < Math.min(boxes, 12); i++) {
+        const layer = Math.floor(i / 4);
+        const j = i % 4;
+        items.push({
+          x: SALES.boxes.x + (j % 2) * 0.88,
+          y: SALES.boxes.y + Math.floor(j / 2) * 0.88,
+          z: layer * 0.62,
+          kind: 'box',
+        });
       }
-      for (const it of byDepth(items)) {
-        if (it.kind === 'pc') pcTower(p, it.x, it.y, it.z, pal, pal.screenGlow);
-        else packedBox(p, it.x, it.y, it.z, pal);
+      items.sort((a, b) => a.x + a.y - (b.x + b.y) || a.z - b.z);
+      for (const it of items) {
+        if (it.kind === 'pc') pcTower(p, pal, it.x, it.y, it.z);
+        else packedBox(p, pal, it.x, it.y, it.z);
       }
-
-      // 外の道路と集荷のバン
-      const rx0 = 9.2;
-      const rx1 = 11.5;
-      p.box(rx0, -0.4, -0.95, rx1 - rx0, 6.2, 0.45, pal.road);
-      for (let y = 0.4; y < 5.6; y += 1.5) p.flatRect(10.25, y, 10.45, y + 0.7, -0.499, pal.roadStripe);
-      const vx = 9.45;
-      const vy = 0.2;
-      const vw = 1.6;
-      const base = -0.5;
-      // 荷台
-      p.box(vx, vy, base, vw, 3.0, 1.45, pal.van);
-      p.face(
-        [
-          [vx + vw + 0.005, vy + 0.35, base + 0.35],
-          [vx + vw + 0.005, vy + 2.75, base + 0.75],
-          [vx + vw + 0.005, vy + 2.75, base + 0.9],
-          [vx + vw + 0.005, vy + 0.35, base + 0.5],
-        ],
-        pal.vanStripe,
-      );
-      // 運転席
-      p.box(vx, vy + 3.0, base, vw, 0.95, 1.05, pal.van);
-      p.face(
-        [
-          [vx + 0.14, vy + 3.95 + 0.005, base + 0.55],
-          [vx + vw - 0.14, vy + 3.95 + 0.005, base + 0.55],
-          [vx + vw - 0.14, vy + 3.95 + 0.005, base + 0.95],
-          [vx + 0.14, vy + 3.95 + 0.005, base + 0.95],
-        ],
-        pal.vanWindow,
-      );
-      p.face(
-        [
-          [vx + vw + 0.005, vy + 3.1, base + 0.55],
-          [vx + vw + 0.005, vy + 3.8, base + 0.55],
-          [vx + vw + 0.005, vy + 3.8, base + 0.92],
-          [vx + vw + 0.005, vy + 3.1, base + 0.92],
-        ],
-        pal.vanWindow,
-      );
+      road(p, pal, SALES.road);
     },
   };
 }
 
-export function roomScene(lane: Lane, s: GameState, bal: Balance): SceneInfo {
+export function roomScene(lane: Lane, s: GameState, extra: SceneExtra): SceneInfo {
   const L = ROOM_LAYOUT[lane];
-  if (lane === 'dis') return productionScene(s, L);
-  if (lane === 'asm') return assemblyScene(s, L);
-  return salesScene(s, L, bal);
+  if (lane === 'dis') return productionScene(s, L, extra.broken);
+  if (lane === 'asm') return assemblyScene(s, L, extra.installing);
+  return salesScene(s, L, extra.boxesWaiting);
 }

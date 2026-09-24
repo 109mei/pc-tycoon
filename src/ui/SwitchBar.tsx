@@ -6,7 +6,10 @@ import { ChevronRight, LANE_NAME, LaneIcon, User } from './icons';
 
 const LANES: Lane[] = ['dis', 'asm', 'ship'];
 
-/** 生産 → 制作 → 販売 の切り替え。たまっている量、詰まりの「！」、アルバイトの印 */
+/**
+ * 生産 → 制作 → 販売 の切り替え（作業ボタンのすぐ上、親指の届く位置）。
+ * たまっている量（ジャンク・組める台数・完成品）、詰まりの「！」、アルバイトの印、序盤の導きの光。
+ */
 export function SwitchBar() {
   const v = useGame(
     useShallow((st) => ({
@@ -15,6 +18,7 @@ export function SwitchBar() {
       asm: st.view!.counts.asm,
       ship: st.view!.counts.ship,
       stuck: st.view!.bottleneck,
+      hint: st.view!.hintLane,
       wDis: st.view!.workersByLane.dis,
       wAsm: st.view!.workersByLane.asm,
       wShip: st.view!.workersByLane.ship,
@@ -28,14 +32,14 @@ export function SwitchBar() {
         <Fragment key={lane}>
           {i > 0 && <ChevronRight className="switch-arrow" size={20} strokeWidth={2.6} aria-hidden="true" />}
           <button
-            className={`lane-btn lane-${lane}${v.screen === lane ? ' active' : ''}`}
+            className={`lane-btn lane-${lane}${v.screen === lane ? ' active' : ''}${v.hint === lane && v.screen !== lane ? ' hint' : ''}`}
             aria-pressed={v.screen === lane}
             data-testid={`switch-${lane}`}
             onClick={() => setScreen(lane)}
           >
             <LaneIcon lane={lane} size={19} strokeWidth={2.4} />
             <span className="lane-name">{LANE_NAME[lane]}</span>
-            <span className="lane-count" data-testid={`count-${lane}`}>
+            <span key={count[lane]} className="lane-count bump" data-testid={`count-${lane}`}>
               {count[lane]}
             </span>
             {v.stuck === lane && (

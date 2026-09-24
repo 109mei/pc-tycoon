@@ -8,10 +8,12 @@ export default defineConfig({
   testMatch: /.*\.spec\.ts/,
   testIgnore: /screens\.spec\.ts/,
   fullyParallel: true,
+  // 同時に動かしすぎると、時間を待つテストが遅れる
+  workers: process.env.CI ? 2 : 4,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
-  timeout: 60_000,
+  timeout: 90_000,
   use: {
     baseURL: `http://localhost:${PORT}/pc-tycoon/`,
     ...devices['Pixel 7'],

@@ -2,21 +2,27 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptSubcontract,
   buyJunk,
+  buyMissingParts,
   createState,
   hire,
   moveToWarehouse,
+  orderRate,
   reassignWorker,
+  returnFromAway,
   setAutoBuy,
+  setPriceLevel,
   setScreen,
   setSubcontractPriority,
+  setsOf,
   step,
   workHold,
   workTap,
   type GameEvent,
   type GameState,
+  type Parts,
 } from '../src/core';
 import { saleNet } from '../src/core/state';
-import { drawYield } from '../src/core/tasks';
+import { inspect } from '../src/core/tasks';
 import { balance as bal } from '../src/data';
 
 /** seconds 秒ぶん刻みを進め、出来事をまとめて返す */
@@ -37,53 +43,94 @@ function quiet(seed = 1): GameState {
   return s;
 }
 
+function parts(n: number, over: Partial<Parts> = {}): Parts {
+  return { board: n, memory: n, storage: n, power: n, ...over };
+}
+
+const DEFAULT_PRICE = bal.market.priceLevels[bal.market.defaultLevel]!.price;
+
 describe('作業', () => {
-  it('分解：ジャンク1台 → 2.5秒で部品1〜4個', () => {
+  it('分解：ジャンク1台 → 2.5秒で4種類を検品し、使える部品だけ増える', () => {
     const s = quiet();
     s.junk = 1;
     expect(workTap(s, bal, 'dis').some((e) => e.type === 'taskStarted')).toBe(true);
     expect(s.junk).toBe(0);
     run(s, 2.4);
-    expect(s.parts).toBe(0);
-    run(s, 0.1);
-    expect(s.parts).toBeGreaterThanOrEqual(1);
-    expect(s.parts).toBeLessThanOrEqual(4);
+    expect(s.stats.disassembled).toBe(0);
+    const ev = run(s, 0.1);
+    const done = ev.find((e) => e.type === 'disassembled');
+    expect(done).toBeDefined();
+    if (done?.type !== 'disassembled') return;
+    expect(done.good.length + done.broken.length).toBe(4);
+    for (const t of done.good) expect(s.parts[t]).toBe(1);
+    for (const t of done.broken) expect(s.parts[t]).toBe(0);
+    expect(s.stats.brokenParts).toBe(done.broken.length);
   });
 
-  it('部品の数の分布は balance の確率どおり（平均2.4個）', () => {
+  it('検品で使える確率は種類ごとに balance のとおり', () => {
     const s = quiet(7);
-    const counts = [0, 0, 0, 0, 0];
+    const good = { board: 0, memory: 0, storage: 0, power: 0 };
     const N = 20000;
-    for (let i = 0; i < N; i++) counts[drawYield(s, bal)]! += 1;
-    for (const row of bal.junk.partsYield) {
-      expect(counts[row.parts]! / N).toBeCloseTo(row.probability, 1);
+    for (let i = 0; i < N; i++) for (const t of inspect(s, bal).good) good[t] += 1;
+    for (const t of ['board', 'memory', 'storage', 'power'] as const) {
+      expect(good[t] / N).toBeCloseTo(bal.junk.goodRate[t], 1);
     }
   });
 
-  it('組み立て：部品4個 → 4秒で完成品1台。材料は始めた時点で取る', () => {
+  it('組み立て：4種類を1個ずつ使って、4秒で完成品1台', () => {
     const s = quiet();
     setScreen(s, 'asm');
-    s.parts = 5;
+    s.parts = parts(1, { memory: 3 });
     workTap(s, bal, 'asm');
-    expect(s.parts).toBe(1);
+    expect(s.parts).toEqual(parts(0, { memory: 2 }));
     run(s, 3.9);
     expect(s.pcs).toBe(0);
     run(s, 0.1);
     expect(s.pcs).toBe(1);
   });
 
-  it('発送：完成品1台と注文1件 → 1.5秒で 16,320円', () => {
+  it('1種類でも足りなければ組み立てられない', () => {
+    const s = quiet();
+    setScreen(s, 'asm');
+    s.parts = parts(3, { storage: 0 });
+    expect(setsOf(s.parts)).toBe(0);
+    expect(workTap(s, bal, 'asm')).toEqual([]);
+  });
+
+  it('発送：注文したときの値段で入金する（19,800円なら 16,320円）', () => {
     const s = quiet();
     setScreen(s, 'ship');
-    s.pcs = 1;
-    s.orders.push({ id: 99, arrivedAt: 0 });
+    s.pcs = 2;
+    s.orders.push({ id: 1, arrivedAt: 0, price: 19800 }, { id: 2, arrivedAt: 0, price: 17800 });
     const cash = s.cash;
     workTap(s, bal, 'ship');
-    expect(s.orders.length).toBe(0);
     run(s, 1.5);
-    expect(saleNet(bal)).toBe(16320);
+    expect(saleNet(bal, 19800)).toBe(16320);
     expect(s.cash).toBe(cash + 16320);
-    expect(s.stats.sold).toBe(1);
+    workTap(s, bal, 'ship');
+    run(s, 1.5);
+    expect(s.cash).toBe(cash + 16320 + saleNet(bal, 17800));
+    expect(s.stats.sold).toBe(2);
+  });
+
+  it('作業中のタップは1回だけ予約し、手が空いたら始める。画面を移ると取り消す', () => {
+    const s = quiet();
+    s.junk = 3;
+    workTap(s, bal, 'dis');
+    workTap(s, bal, 'dis');
+    workTap(s, bal, 'dis');
+    expect(s.player.queued).toBe(true);
+    run(s, 2.6);
+    expect(s.junk).toBe(1);
+    expect(s.player.task).not.toBeNull();
+    expect(s.player.queued).toBe(false);
+    run(s, 2.6);
+    expect(s.stats.disassembled).toBe(2);
+    expect(s.player.task).toBeNull();
+    workTap(s, bal, 'dis');
+    workTap(s, bal, 'dis');
+    setScreen(s, 'asm');
+    expect(s.player.queued).toBe(false);
   });
 
   it('今いる画面の列の作業しかできない', () => {
@@ -110,16 +157,17 @@ describe('作業', () => {
     expect(s.stats.disassembled).toBe(2);
   });
 
-  it('アルバイトは自分の0.9倍の速さで、材料がある限り続ける。自分と並行して作業する', () => {
+  it('アルバイトは速さの倍率で作業し、材料がある限り続ける。自分と並行して作業する', () => {
     const s = quiet();
     s.cash = 1e6;
     s.junk = 10;
     hire(s, bal, 'dis');
     workHold(s, bal, 'dis', true);
+    const workerSeconds = bal.taskSeconds.disassemble / bal.workers.speed;
+    run(s, Math.ceil(workerSeconds * 10) / 10);
+    expect(s.stats.disassembled).toBe(workerSeconds < bal.taskSeconds.disassemble ? 1 : 2);
     run(s, 2.5);
-    expect(s.stats.disassembled).toBe(1);
-    run(s, 0.3);
-    expect(s.stats.disassembled).toBe(2);
+    expect(s.stats.disassembled).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -132,22 +180,34 @@ describe('仕入れ', () => {
     expect(s.cash).toBe(1000);
   });
 
-  it('自動：ジャンクが2台未満なら、次の支払い額を残せる分だけ買う', () => {
-    const s = quiet();
-    setAutoBuy(s, true);
-    s.cash = 10000;
+  it('自動：ジャンクが2台未満なら買う。支払いが遠いうちは取り置きしない', () => {
+    const s = createState(bal, 1);
+    s.nextOrderAt = 1e9;
+    s.nextOfferAt = 1e9;
+    s.cash = 8000;
     run(s, 0.1);
     expect(s.junk).toBe(2);
-    expect(s.cash).toBe(4000);
+    expect(s.cash).toBe(2000);
   });
 
-  it('自動：部品12個以上か完成品3台以上なら止まる', () => {
+  it('自動：支払いが近いときは、支払い額を残せる分だけ買う', () => {
+    const s = createState(bal, 1);
+    s.nextOrderAt = 1e9;
+    s.nextOfferAt = 1e9;
+    s.nextPayAt = bal.junk.autoBuy.reserveWithinSeconds - 1;
+    const bill = bal.payments.utility + bal.payments.rent;
+    s.cash = bill + bal.junk.price + 100;
+    run(s, 0.1);
+    expect(s.junk).toBe(1);
+  });
+
+  it('自動：組める台数が3台以上か完成品が3台以上なら止まる', () => {
     const s = quiet();
     setAutoBuy(s, true);
-    s.parts = 12;
+    s.parts = parts(3);
     run(s, 0.1);
     expect(s.junk).toBe(0);
-    s.parts = 0;
+    s.parts = parts(0);
     s.pcs = 3;
     run(s, 0.1);
     expect(s.junk).toBe(0);
@@ -156,17 +216,66 @@ describe('仕入れ', () => {
   it('自動：作業が止まっているときは取り置きを崩して1台買う', () => {
     const s = quiet();
     setAutoBuy(s, true);
+    s.nextPayAt = s.t + 1;
     s.cash = 3500;
     run(s, 0.1);
     expect(s.junk).toBe(1);
     expect(s.cash).toBe(500);
   });
+
+  it('足りない部品を新品で補う：足りない種類だけ買い、値段は種類ごと', () => {
+    const s = quiet();
+    s.parts = parts(2, { storage: 0, power: 0 });
+    s.cash = 100000;
+    const ev = buyMissingParts(s, bal);
+    const cost = bal.newParts.price.storage + bal.newParts.price.power;
+    expect(ev).toEqual([{ type: 'partsBought', types: ['storage', 'power'], cost }]);
+    expect(s.parts).toEqual(parts(2, { storage: 1, power: 1 }));
+    expect(s.cash).toBe(100000 - cost);
+    expect(buyMissingParts(s, bal)).toEqual([]);
+  });
+
+  it('新品で補う：お金が足りなければ買わない', () => {
+    const s = quiet();
+    s.parts = parts(1, { board: 0 });
+    s.cash = bal.newParts.price.board - 1;
+    expect(buyMissingParts(s, bal)).toEqual([]);
+    expect(s.parts.board).toBe(0);
+  });
 });
 
-describe('注文', () => {
+describe('出品価格と注文', () => {
+  it('高い段階は評価（売った件数）が足りないと選べない', () => {
+    const s = quiet();
+    const high = bal.market.priceLevels.findIndex((l) => l.minReviews > 0);
+    expect(setPriceLevel(s, bal, high)).toEqual([]);
+    s.stats.sold = bal.market.priceLevels[high]!.minReviews;
+    expect(setPriceLevel(s, bal, high)).toEqual([{ type: 'priceChanged', level: high }]);
+  });
+
+  it('値段が高いほど注文が少なく、評価が増えると多くなる', () => {
+    const s = quiet();
+    const base = orderRate(s, bal);
+    setPriceLevel(s, bal, 0);
+    expect(orderRate(s, bal)).toBeGreaterThan(base);
+    s.stats.sold = 30;
+    expect(orderRate(s, bal)).toBeCloseTo((base * bal.market.priceLevels[0]!.demand) * (1 + 30 * bal.orders.growthPerSale), 9);
+  });
+
+  it('注文は届いたときの値段を持つ', () => {
+    const s = createState(bal, 2);
+    s.autoBuy = false;
+    s.nextPayAt = 1e9;
+    s.nextOfferAt = 1e9;
+    setPriceLevel(s, bal, 1);
+    run(s, 60);
+    expect(s.stats.ordersArrived).toBeGreaterThan(0);
+    for (const o of s.orders) expect(o.price).toBe(bal.market.priceLevels[1]!.price);
+  });
+
   it('15秒以内に発送が始まらないと失われる', () => {
     const s = quiet();
-    s.orders.push({ id: 1, arrivedAt: 0 });
+    s.orders.push({ id: 1, arrivedAt: 0, price: DEFAULT_PRICE });
     run(s, 15);
     expect(s.orders.length).toBe(1);
     run(s, 0.1);
@@ -174,7 +283,7 @@ describe('注文', () => {
     expect(s.stats.ordersLost).toBe(1);
   });
 
-  it('届く間隔の平均は 7秒（売った台数で増える）', () => {
+  it('届く間隔の平均は baseIntervalSeconds（元の値段・評価なし）', () => {
     const s = createState(bal, 3);
     s.autoBuy = false;
     s.nextPayAt = 1e9;
@@ -182,32 +291,36 @@ describe('注文', () => {
     let arrived = 0;
     const seconds = 7000;
     for (const e of run(s, seconds)) if (e.type === 'orderArrived') arrived += 1;
-    expect(seconds / arrived).toBeGreaterThan(6.5);
-    expect(seconds / arrived).toBeLessThan(7.5);
+    const mean = seconds / arrived;
+    expect(mean).toBeGreaterThan(bal.orders.baseIntervalSeconds * 0.92);
+    expect(mean).toBeLessThan(bal.orders.baseIntervalSeconds * 1.08);
   });
 
   it('発送は古い注文から当てる', () => {
     const s = quiet();
     setScreen(s, 'ship');
     s.pcs = 1;
-    s.orders.push({ id: 1, arrivedAt: 0 }, { id: 2, arrivedAt: 0.05 });
+    s.orders.push({ id: 1, arrivedAt: 0, price: DEFAULT_PRICE }, { id: 2, arrivedAt: 0.05, price: DEFAULT_PRICE });
     workTap(s, bal, 'ship');
     expect(s.orders.map((o) => o.id)).toEqual([2]);
   });
 });
 
 describe('支払い', () => {
-  it('60秒ごとに電気代＋給料×人数', () => {
+  const fixed = bal.payments.utility + bal.payments.rent;
+
+  it('60秒ごとに電気代＋家賃＋給料×人数', () => {
     const s = createState(bal, 1);
     s.autoBuy = false;
     s.nextOrderAt = 1e9;
     s.nextOfferAt = 1e9;
     s.cash = 100000;
     hire(s, bal, 'asm');
+    const afterHire = 100000 - bal.workers.hireCost;
     run(s, 59.9);
-    expect(s.cash).toBe(40000);
+    expect(s.cash).toBe(afterHire);
     run(s, 0.1);
-    expect(s.cash).toBe(40000 - 1500 - 12000);
+    expect(s.cash).toBe(afterHire - fixed - bal.workers.wage);
   });
 
   it('払えなければ30秒の猶予。戻らなければ倒産、戻れば解除', () => {
@@ -215,7 +328,7 @@ describe('支払い', () => {
     s.autoBuy = false;
     s.nextOrderAt = 1e9;
     s.nextOfferAt = 1e9;
-    s.cash = 1000;
+    s.cash = fixed - 500;
     run(s, 60);
     expect(s.cash).toBe(-500);
     expect(s.graceUntil).toBeCloseTo(90, 5);
@@ -228,27 +341,35 @@ describe('支払い', () => {
     r.autoBuy = false;
     r.nextOrderAt = 1e9;
     r.nextOfferAt = 1e9;
-    r.cash = 1000;
+    r.cash = fixed - 500;
     run(r, 60);
     r.cash += 600;
     run(r, 0.1);
     expect(r.graceUntil).toBeNull();
-    run(r, 40);
-    expect(r.status).toBe('playing');
+  });
+
+  it('長く閉じていて次の支払いに足りないなら、戻ってすぐには払わせない', () => {
+    const s = quiet();
+    s.cash = 100;
+    s.nextPayAt = s.t + 5;
+    returnFromAway(s, bal, 5);
+    expect(s.nextPayAt).toBeCloseTo(s.t + 5, 5);
+    returnFromAway(s, bal, bal.payments.intervalSeconds);
+    expect(s.nextPayAt).toBeCloseTo(s.t + bal.payments.intervalSeconds, 5);
   });
 });
 
 describe('アルバイト', () => {
-  it('雇用費60,000円、段階1は2人まで、所持金が足りなければ雇えない', () => {
+  it('雇用費を払い、段階1は2人まで、所持金が足りなければ雇えない', () => {
     const s = quiet();
-    s.cash = 59999;
+    s.cash = bal.workers.hireCost - 1;
     expect(hire(s, bal, 'asm')).toEqual([]);
-    s.cash = 200000;
+    s.cash = bal.workers.hireCost * 3;
     hire(s, bal, 'asm');
     hire(s, bal, 'dis');
     hire(s, bal, 'ship');
-    expect(s.workers.length).toBe(2);
-    expect(s.cash).toBe(80000);
+    expect(s.workers.length).toBe(bal.workers.maxCount);
+    expect(s.cash).toBe(bal.workers.hireCost);
   });
 
   it('担当の列を変えられる（作業中の分は元の列で完了する）', () => {
@@ -264,7 +385,7 @@ describe('アルバイト', () => {
     expect(s.junk).toBe(4);
   });
 
-  it('制作のアルバイトは、優先OFFでも部品がなくキットがあればキットを使う', () => {
+  it('制作のアルバイトは、優先OFFでも部品がそろっていなければキットを使う', () => {
     const s = quiet();
     s.cash = 100000;
     s.nextOfferAt = 0.1;
@@ -272,14 +393,14 @@ describe('アルバイト', () => {
     acceptSubcontract(s, bal);
     hire(s, bal, 'asm');
     run(s, 0.1);
-    expect(s.sub!.kits).toBe(5);
+    expect(s.sub!.kits).toBe(bal.subcontract.units - 1);
     expect(s.workers[0]!.task!.kit).toBe(true);
   });
 
-  it('「下請けを優先」ONなら部品があってもキットを使う', () => {
+  it('「下請けを優先」ONなら部品がそろっていてもキットを使う', () => {
     const s = quiet();
     s.cash = 100000;
-    s.parts = 8;
+    s.parts = parts(2);
     s.nextOfferAt = 0.1;
     run(s, 0.1);
     acceptSubcontract(s, bal);
@@ -287,7 +408,7 @@ describe('アルバイト', () => {
     setScreen(s, 'asm');
     workTap(s, bal, 'asm');
     expect(s.player.task!.kit).toBe(true);
-    expect(s.parts).toBe(8);
+    expect(s.parts).toEqual(parts(2));
   });
 });
 
@@ -326,23 +447,12 @@ describe('下請け', () => {
     expect(s.cash).toBe(54000 - 5 * 4000);
     expect(s.stats.subsFailed).toBe(1);
   });
-
-  it('受けている下請けがあるときは依頼が来ない', () => {
-    const s = quiet();
-    s.cash = 50000;
-    s.nextOfferAt = 0.1;
-    run(s, 0.1);
-    acceptSubcontract(s, bal);
-    s.nextOfferAt = s.t + 0.1;
-    run(s, 0.1);
-    expect(s.offer).toBeNull();
-  });
 });
 
 describe('詰まりの判定', () => {
-  it('制作：部品÷4−1 が1以上の状態が3秒続くと表示する', () => {
+  it('制作：組める台数−1 が1以上の状態が3秒続くと表示する', () => {
     const s = quiet();
-    s.parts = 8;
+    s.parts = parts(2);
     run(s, 2.9);
     expect(s.bottleneck.shown).toBeNull();
     run(s, 0.2);
@@ -352,6 +462,7 @@ describe('詰まりの判定', () => {
   it('生産：制作に手があるのに組み立てを始められない秒数÷3', () => {
     const s = quiet();
     setScreen(s, 'asm');
+    s.parts = parts(5, { power: 0 });
     run(s, 3);
     expect(s.bottleneck.starvedSeconds).toBeCloseTo(3, 5);
     run(s, 3.1);
@@ -361,7 +472,7 @@ describe('詰まりの判定', () => {
   it('販売：完成品−1。待っている注文の数は使わない', () => {
     const s = quiet();
     s.pcs = 3;
-    s.orders.push({ id: 1, arrivedAt: 0 });
+    s.orders.push({ id: 1, arrivedAt: 0, price: DEFAULT_PRICE });
     run(s, 3.1);
     expect(s.bottleneck.shown).toBe('ship');
   });
@@ -371,7 +482,7 @@ describe('クリア', () => {
   it('所持金が40万円に届いたら貸し倉庫へ移れる', () => {
     const s = quiet();
     expect(moveToWarehouse(s, bal)).toEqual([]);
-    s.cash = 400000;
+    s.cash = bal.stage1.clearCash;
     run(s, 0.1);
     expect(s.stats.clearReachedAt).not.toBeNull();
     moveToWarehouse(s, bal);

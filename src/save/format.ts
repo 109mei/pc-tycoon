@@ -1,8 +1,11 @@
 import type { GameState, Lane } from '../core/types';
+import { MIGRATIONS } from './migrations';
 import { SaveDataSchema, type Settings } from './schema';
 
+export { MIGRATIONS } from './migrations';
+
 /** セーブの版番号。形を変えたら上げて、MIGRATIONS に古い版からの変換を足す */
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 export interface SaveData {
   saveVersion: number;
@@ -13,9 +16,6 @@ export interface SaveData {
   settings: Settings;
   state: GameState;
 }
-
-/** 版 n のセーブを 版 n+1 に変換する関数。試作1では変換対象なし */
-export const MIGRATIONS: Record<number, (old: Record<string, unknown>) => Record<string, unknown>> = {};
 
 export class SaveFormatError extends Error {}
 
@@ -28,7 +28,11 @@ export function migrate(raw: unknown): SaveData {
   while (version < SAVE_VERSION) {
     const up = MIGRATIONS[version];
     if (!up) throw new SaveFormatError(`版 ${version} のセーブは変換できない`);
-    data = up(data);
+    try {
+      data = up(structuredClone(data));
+    } catch {
+      throw new SaveFormatError(`版 ${version} のセーブを変換できなかった`);
+    }
     version += 1;
     data.saveVersion = version;
   }

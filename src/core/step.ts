@@ -1,6 +1,6 @@
 import type { Balance } from '../data/schema';
 import { expovariate } from './rng';
-import { activeWorkerCount, newPeriod, nextBill, orderRate } from './state';
+import { activeWorkerCount, newPeriod, nextBill, orderRate, priceLevelOf, setsOf } from './state';
 import { progressTask, spend, startPlayerTask, startWorkerTask } from './tasks';
 import type { GameEvent, GameState, Lane } from './types';
 
@@ -28,7 +28,7 @@ export function step(s: GameState, bal: Balance, opts: StepOptions = {}): GameEv
   // 注文が届く（ポアソン到着）
   while (t >= s.nextOrderAt) {
     const id = s.nextOrderId++;
-    s.orders.push({ id, arrivedAt: s.nextOrderAt });
+    s.orders.push({ id, arrivedAt: s.nextOrderAt, price: priceLevelOf(s, bal).price });
     s.stats.ordersArrived += 1;
     ev.push({ type: 'orderArrived', id });
     s.nextOrderAt += expovariate(s, orderRate(s, bal));
@@ -38,6 +38,7 @@ export function step(s: GameState, bal: Balance, opts: StepOptions = {}): GameEv
   while (s.orders.length > 0 && t - s.orders[0]!.arrivedAt > bal.orders.patienceSeconds) {
     const lost = s.orders.shift()!;
     s.stats.ordersLost += 1;
+    s.recent.lost.push(t);
     ev.push({ type: 'orderLost', id: lost.id });
   }
 
@@ -91,8 +92,9 @@ export function step(s: GameState, bal: Balance, opts: StepOptions = {}): GameEv
 
   // 自分の手（今いる画面の列だけ。長押し中は材料がある限り続ける）
   if (!away) {
-    if (s.player.task === null && s.player.holding) {
+    if (s.player.task === null && (s.player.holding || s.player.queued)) {
       startPlayerTask(s, bal, s.player.screen, 'auto', ev);
+      s.player.queued = false;
     }
     progressTask(s, bal, s.player, 'player', ev);
   }
@@ -124,7 +126,7 @@ function pay(s: GameState, bal: Balance, away: boolean, ev: GameEvent[]): void {
       for (const w of s.workers) w.resting = true;
       ev.push({ type: 'workersRested' });
     }
-    bill = Math.min(bal.payments.utility, Math.max(0, s.cash));
+    bill = Math.min(bal.payments.utility + bal.payments.rent, Math.max(0, s.cash));
   }
   spend(s, bill);
   ev.push({ type: 'paid', amount: bill });
@@ -144,22 +146,24 @@ function closePeriod(s: GameState, bal: Balance): void {
 }
 
 /**
- * 自動仕入れ：ジャンクが keepJunk 未満、部品・完成品がためすぎでない、買ったあとも次の支払い額が残るときに1台ずつ買う。
- * ジャンク・部品（1台分）・完成品がすべてなく作業が止まっているときは、取り置きを崩してでも1台買う。
+ * 自動仕入れ：ジャンクが keepJunk 未満、組める台数・完成品がためすぎでないときに1台ずつ買う。
+ * 次の支払いが近い（reserveWithinSeconds 以内）ときは、買ったあとも支払い額が残る分だけ買う。
+ * ジャンク・組める部品・完成品がすべてなく作業が止まっているときは、取り置きを崩してでも1台買う。
  */
 export function autoBuy(s: GameState, bal: Balance, ev: GameEvent[]): void {
   const a = bal.junk.autoBuy;
   const price = bal.junk.price;
-  const reserve = nextBill(s, bal);
+  const reserve = s.nextPayAt - s.t <= a.reserveWithinSeconds ? nextBill(s, bal) : 0;
+  const sets = setsOf(s.parts);
   let need = a.keepJunk;
-  if (s.pcs >= a.pauseWhenPcsAtLeast || s.parts >= a.pauseWhenPartsAtLeast) need = 0;
+  if (s.pcs >= a.pauseWhenPcsAtLeast || sets >= a.pauseWhenSetsAtLeast) need = 0;
   let n = 0;
   while (s.junk < need && s.cash - price >= reserve) {
     spend(s, price);
     s.junk += 1;
     n += 1;
   }
-  if (s.junk === 0 && s.parts < bal.pc.partsPerPc && s.pcs === 0 && s.cash >= price) {
+  if (s.junk === 0 && sets < 1 && s.pcs === 0 && s.cash >= price) {
     spend(s, price);
     s.junk += 1;
     n += 1;
@@ -172,17 +176,16 @@ export function autoBuy(s: GameState, bal: Balance, ev: GameEvent[]): void {
 
 /** 各列の詰まり具合（1.0以上で「詰まり」） */
 export function bottleneckScores(s: GameState, bal: Balance): Record<Lane, number> {
-  const P = bal.pc.partsPerPc;
   return {
     dis: s.bottleneck.starvedSeconds / bal.bottleneck.starvedSecondsPerPoint,
-    asm: s.parts / P - 1,
+    asm: setsOf(s.parts) - 1,
     ship: s.pcs - 1,
   };
 }
 
 function updateBottleneck(s: GameState, bal: Balance, away: boolean): void {
   const b = s.bottleneck;
-  const canAssemble = s.parts >= bal.pc.partsPerPc || (s.sub !== null && s.sub.kits > 0);
+  const canAssemble = setsOf(s.parts) >= 1 || (s.sub !== null && s.sub.kits > 0);
   const playerHand = !away && s.player.screen === 'asm' && s.player.task === null;
   const workerHand = s.workers.some((w) => w.lane === 'asm' && !w.resting && w.task === null);
   if ((playerHand || workerHand) && !canAssemble) b.starvedSeconds += bal.tickSeconds;
@@ -232,6 +235,7 @@ export function recentKeepSeconds(bal: Balance): number {
     d.hireMeasurePreSeconds + d.hireMeasurePostSeconds,
     d.shippedBoxSeconds,
     bal.bot.secondHireWindowSeconds,
+    bal.bot.priceWindowSeconds,
   );
 }
 
@@ -241,4 +245,5 @@ function trimRecent(s: GameState, bal: Balance): void {
   while (r.income.length > 0 && r.income[0]![0] <= from) r.income.shift();
   while (r.asm.length > 0 && r.asm[0]![0] <= from) r.asm.shift();
   while (r.sold.length > 0 && r.sold[0]! <= from) r.sold.shift();
+  while (r.lost.length > 0 && r.lost[0]! <= from) r.lost.shift();
 }

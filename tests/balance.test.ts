@@ -21,10 +21,16 @@ describe('数値（balance）', () => {
 
   it('おかしな数値は検査で落ちる', () => {
     const bad = structuredClone(stage1);
-    bad.junk.partsYield[0].probability = 0.5;
+    bad.junk.goodRate.storage = 1.5;
     expect(() => BalanceSchema.parse(bad)).toThrow();
     const bad2 = structuredClone(stage1);
     bad2.tickSeconds = -1;
     expect(() => BalanceSchema.parse(bad2)).toThrow();
+    const bad3 = structuredClone(stage1);
+    bad3.market.priceLevels.reverse();
+    expect(() => BalanceSchema.parse(bad3)).toThrow();
+    const bad4 = structuredClone(stage1);
+    bad4.market.defaultLevel = bad4.market.priceLevels.length;
+    expect(() => BalanceSchema.parse(bad4)).toThrow();
   });
 });

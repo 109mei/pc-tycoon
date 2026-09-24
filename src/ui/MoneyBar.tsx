@@ -13,6 +13,7 @@ export function MoneyBar() {
         pct: view.warehousePct,
         payIn: view.payIn,
         payAmount: view.payAmount,
+        payShort: view.payShort,
         grace: view.graceLeft,
       };
     }),
@@ -44,8 +45,12 @@ export function MoneyBar() {
             あと{secs(v.grace!)}で倒産
           </span>
         ) : (
-          <span className="pay">
-            <Clock size={17} strokeWidth={2.2} className="muted-icon" />
+          <span className={`pay${v.payShort ? ' short' : ''}`} data-testid="pay">
+            {v.payShort ? (
+              <TriangleAlert size={16} strokeWidth={2.6} />
+            ) : (
+              <Clock size={17} strokeWidth={2.2} className="muted-icon" />
+            )}
             <b>{secs(v.payIn)}</b>
             <span className="bill">{yen(-v.payAmount)}</span>
           </span>
